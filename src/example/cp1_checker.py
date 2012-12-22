@@ -40,8 +40,6 @@ for i in xrange(numTrials):
 	for j in xrange(numWritesReads):
 			data = socketSubset[j].recv(randomLen[j])
 			if(data != randomData[j]):
-                                sys.stderr.write("recv: %s\n"% data);
-                                sys.stderr.write("formal: %s\n"% randomData[j]);
 				sys.stderr.write("Error: Data received is not the same as sent! \n")
 				sys.exit(1)
 				
