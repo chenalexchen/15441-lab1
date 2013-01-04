@@ -25,9 +25,5 @@
 #define err_printf(fmt, args...) 
 #endif
 
-/* console printf */
-#define cprintf(fmt, args...) do{fprintf(stdout, "^_^:"fmt, ##args);    \
-        fflush(stdout);}while(0)
-
 
 #endif /* end of __DEBUG_DEFINE_H_ */

@@ -12,14 +12,29 @@ CC = gcc
 INCLUDE = ./inc
 
 
-CFLAGS = -Wall -Werror -I$(INCLUDE)
-default: server
-
-server: server.c
-	$(CC) server.c -o server $(CFLAGS)
+CFLAGS = -Wall -Werror -g -I$(INCLUDE)
 
 
-.PHONY: clean
+# object files needed by server
+OBJ = server.o parser.o
+
+
+
+
+
+
+srv: $(OBJ)
+	$(CC) $(OBJ) -o srv $(CFLAGS)
+
+
+%.o: %.c
+	$(CC) $< $(CFLAGS) -c -o $@
+
+
+
+.PHONY: clean veryclean
 
 clean:
-	rm server
+	rm srv *.o
+veryclean: 
+	rm srv *.o *~
