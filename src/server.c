@@ -1,6 +1,9 @@
 /** @file server.c
  *  @brief a server based on select
  *
+ *  
+ *  We would rather use memcpy than strcpy(strncpy) to avoid uncontrollable 
+ *  copy behavior
  *
  *  @author Chen Chen (chenche1)
  *  @bug no bug found
@@ -51,11 +54,11 @@ static int ssl_port = SSL_PORT;
 
 static char *srv_cert_file = "pki_jungle/myCA/certs/server.crt";
 static char *srv_private_key_file = "pki_jungle/myCA/private/server.key";
-static char *ca_cert_file = "pki_jungle/myCA/certs/myca.crt";
-static char *ca_private_key_file = "pki_jungle/myCA/private/myca.key";
+//static char *ca_cert_file = "pki_jungle/myCA/certs/myca.crt";
+//static char *ca_private_key_file = "pki_jungle/myCA/private/myca.key";
 
 SSL_CTX *ssl_ctx;
-SSL_METHOD *ssl_mthd;
+const SSL_METHOD *ssl_mthd;
 
 
 
@@ -223,7 +226,8 @@ static int init_cli_cb(cli_cb_t *cli_cb, struct sockaddr_in *addr, int cli_fd,
     cli_cb->buf_out_ctr = -1;
 
     INIT_LIST_HEAD(&cli_cb->req_msg_list);
-
+    
+    dbg_printf("add new client cb(%d)", cli_cb->cli_fd);
     /* insert the client cb into hash table */
     list_add_tail(&cli_cb->cli_link, &cli_list[cli_fd % HASH_SIZE]);
 
@@ -233,12 +237,13 @@ static int init_cli_cb(cli_cb_t *cli_cb, struct sockaddr_in *addr, int cli_fd,
 
 static void free_cli_cb(cli_cb_t *cli_cb)
 {
-    if(cli_cb->buf_out)
-        free(cli_cb->buf_out);
-    cli_cb->buf_out = NULL;
-    list_del(&cli_cb->cli_link);
-    free(cli_cb);
-    return;
+        dbg_printf("try to free cli_cb(%d)", cli_cb->cli_fd);
+        if(cli_cb->buf_out)
+                free(cli_cb->buf_out);
+        cli_cb->buf_out = NULL;
+        list_del(&cli_cb->cli_link);
+        free(cli_cb);
+        return;
 }
 
 
@@ -246,55 +251,56 @@ static void free_cli_cb(cli_cb_t *cli_cb)
 
 static int is_buf_in_empty(cli_cb_t *cli_cb)
 {
-    return *(cli_cb->buf_in) == 0;
+        return *(cli_cb->buf_in) == 0;
 }
 
 
 
 static void set_buf_ctr(cli_cb_t *cli_cb, int ctr)
 {
-    cli_cb->buf_in_ctr = ctr;
+        cli_cb->buf_in_ctr = ctr;
 }
 
 static cli_cb_t *get_cli_cb(int cli_fd)
 {
-    cli_cb_t *item;
-    list_for_each_entry(item, &cli_list[cli_fd % HASH_SIZE], cli_link){
-        if(item->cli_fd == cli_fd){
-            return item;
+        cli_cb_t *item;
+        list_for_each_entry(item, &cli_list[cli_fd % HASH_SIZE], cli_link){
+
+                if(item->cli_fd == cli_fd){
+                        return item;
+                }
         }
-    }
-    return NULL;
+        return NULL;
 }
 
 
 static int close_socket(int sock)
 {
-    dbg_printf("close conn(%d)", sock);
-    if (close(sock))
-    {
-        fprintf(stderr, "Failed closing socket.\n");
-        return 1;
-    }
-    FD_CLR(sock, &read_fds);
-    FD_CLR(sock, &write_fds);
-    FD_CLR(sock, &read_wait_fds);
-    FD_CLR(sock, &write_wait_fds);
-    reelect_max_fd();
-    return 0;
+        dbg_printf("close conn(%d)", sock);
+        if (close(sock))
+                {
+                        fprintf(stderr, "Failed closing socket.\n");
+                        return 1;
+                }
+        FD_CLR(sock, &read_fds);
+        FD_CLR(sock, &write_fds);
+        FD_CLR(sock, &read_wait_fds);
+        FD_CLR(sock, &write_wait_fds);
+        reelect_max_fd();
+        return 0;
 }
 
 static int tcp_close_socket(cli_cb_t *cb)
 {
-    int ret;
-
-    dbg_printf("close socket(%d)", cb->cli_fd);
-    if((ret = close_socket(cb->cli_fd)) < 0){
-        ret = ERR_CLOSE_SOCKET;
-        return ret;
-    }
-    free_cli_cb(cb);
-    return 0;
+        int ret;
+        
+        dbg_printf("close socket(%d)", cb->cli_fd);
+        if((ret = close_socket(cb->cli_fd)) < 0){
+                ret = ERR_CLOSE_SOCKET;
+                return ret;
+        }
+        free_cli_cb(cb);
+        return 0;
 }
 
 
@@ -422,9 +428,9 @@ int establish_socket(void)
 
 int select_wrapper(struct timeval *t)
 {
-    FD_COPY(&read_fds, &read_wait_fds);
-    FD_COPY(&write_fds, &write_wait_fds);    
-    return select(max_fd, &read_wait_fds, &write_wait_fds, NULL, t);
+        read_wait_fds = read_fds;
+        write_wait_fds = write_fds;
+        return select(max_fd, &read_wait_fds, &write_wait_fds, NULL, t);
 }
 
 
@@ -459,6 +465,8 @@ static int tcp_new_connection(cli_cb_t *cb)
     /* add fd into both read and write fd */
     insert_fd(cli_sock, &read_fds);
     insert_fd(cli_sock, &write_fds);
+
+    dbg_printf("conn(%d) create conn(%d)", cb->cli_fd, cb_new->cli_fd);
     return 0;
 }
 
@@ -506,6 +514,8 @@ static int ssl_new_connection(cli_cb_t *cb)
     /* add fd into both read and write fd */
     insert_fd(cli_sock, &read_fds);
     insert_fd(cli_sock, &write_fds);
+
+    dbg_printf("conn(%d) create conn(%d)", cb->cli_fd, cb_new->cli_fd);
     return 0;
 }
 
@@ -595,7 +605,7 @@ static int ssl_send_wrapper(cli_cb_t *cb)
                                 cb->buf_out_ctr))
            != cb->buf_out_ctr){
             cb->mthd.close(cb);
-                /* free cli_cb */
+
             err_printf("send_ctr (%d), buf_out_ctr(%d).\n", sendctr, 
                        cb->buf_out_ctr);
 
@@ -614,7 +624,7 @@ int kill_connections(void)
 {
     int i;
     cli_cb_t *cb, *cb_next;
-    int ret;
+    int ret = 0;
     /* span the entire cli_list, 1. close existing connection; 2. free
      * existing control block
      */
@@ -634,9 +644,10 @@ int kill_connections(void)
 void liso_shutdown(void)
 {
     int ret;
+    dbg_printf("prepare to shutdown lisod");
     /* free ssl related vars */
     SSL_CTX_free(ssl_ctx);
-
+    
     if((ret = kill_connections()) < 0){
         err_printf("close socket failed");
         exit(EXIT_FAILURE);
@@ -648,69 +659,6 @@ void liso_shutdown(void)
     /* this should never return */
     exit(0);
 }
-
-int recv_wrapper(int fd)
-{
-    cli_cb_t *cb;
-    int readctr;
-    if((cb = get_cli_cb(fd)) !=NULL){
-        if(is_buf_in_empty(cb)){
-            if((readctr = recv(cb->cli_fd, cb->buf_in, 
-                               BUF_IN_SIZE, 0)) 
-               > 0){
-                dbg_printf("reading socket (%i), readctr(%d)",
-                           fd, readctr);
-                /* add null terminator to cb->buf_in */
-                *(cb->buf_in + readctr) = 0;
-                set_buf_ctr(cb, readctr);
-                /* then do nothing */
-            }else{
-                /* if no reading is availale, return NULL */
-                close_socket(cb->cli_fd);
-                free_cli_cb(cb);
-                dbg_printf("conn (%i) is closed", fd);
-                return 0;
-            }
-        }else{
-            dbg_printf("buf not emptied, socket(%d)",fd);
-        }
-    }else{
-        err_printf("conn (%d) doesn't exist", fd);
-        return ERR_CONNECTION_NOT_EXIST;
-    }
-    return 0;
-}
-
-int send_wrapper(int fd)
-{
-    cli_cb_t *cb;
-    int readctr;
-
-    if((cb = get_cli_cb(fd)) !=NULL){
-        
-        if(cb->buf_out_ctr != -1){
-
-            if((readctr = send(cb->cli_fd, cb->buf_out, 
-                               cb->buf_out_ctr, 0))
-               != cb->buf_out_ctr){
-                close_socket(cb->cli_fd);
-                /* free cli_cb */
-                free_cli_cb(cb);
-                err_printf("Error sending to client.\n");
-                return ERR_SEND;
-            }else{
-                dbg_printf("buf sent, conn (%d), ctr(%d)", fd,
-                           cb->buf_out_ctr);
-                cb->buf_out_ctr = -1;
-            }
-        }
-    }else{
-        err_printf("conn (%d) doesn't exist", fd);
-        return ERR_CONNECTION_NOT_EXIST;
-    }
-    return 0;
-}
-
 
 /* static int fill_rspd_hdr(char *buf_hdr, req_msg_t *req_msg) */
 /* { */
@@ -757,12 +705,12 @@ static int handle_get_mthd(req_msg_t *req_msg, cli_cb_t *cb)
             cb->buf_out = NULL;
         }
 
-        if(!(cb->buf_out = (char *)malloc(strlen(buf_hdr)))){
+        if(!(cb->buf_out = (char *)malloc(strlen(buf_hdr) + 1))){
             ret = ERR_NO_MEM;
             goto out1;
         }
         strcpy(cb->buf_out, buf_hdr);
-        cb->buf_out_ctr = strlen(buf_hdr);
+        cb->buf_out_ctr = strlen(buf_hdr) + 1;
         dbg_printf("(buf_out)%s",cb->buf_out);
 
     }else{       
@@ -802,18 +750,23 @@ static int handle_get_mthd(req_msg_t *req_msg, cli_cb_t *cb)
             //            free(cb->buf_out);
             cb->buf_out = NULL;
         }
-        cb->buf_out = (char *)malloc(buf_hdr_len + statbuf.st_size);
-        
+        cb->buf_out = (char *)malloc(buf_hdr_len + 1 + statbuf.st_size);
+        dbg_printf("alloc buf_out(size %d)", buf_hdr_len + 
+                   (int)statbuf.st_size);
         if(!cb->buf_out){
             ret = ERR_NO_MEM;
             goto out2;
         }
         
-        strncpy(cb->buf_out, buf_hdr, BUF_HDR_SIZE);
+        
+        memcpy(cb->buf_out, buf_hdr, buf_hdr_len);
         dbg_printf("(but_out): %s", cb->buf_out);
-        memcpy(cb->buf_out+buf_hdr_len, faddr, statbuf.st_size);
+        memcpy(cb->buf_out + buf_hdr_len, faddr, statbuf.st_size);
         
         cb->buf_out_ctr = buf_hdr_len + statbuf.st_size;
+
+        cb->buf_out[cb->buf_out_ctr] = 0;
+
         if(munmap(faddr, statbuf.st_size) < 0){
             err_printf("munmap failed");
             ret = ERR_MMAP;
@@ -892,6 +845,7 @@ int process_request(void)
                 err_printf("conn(%d) doesn't exist", i);
                 return ERR_CONNECTION_NOT_EXIST;
             }
+            dbg_printf("prepare to process read, conn(%d)",i);
             if(!cb->is_ssl){
                 switch(cb->type){
                 case LISTEN:
@@ -944,6 +898,7 @@ int process_request(void)
                 err_printf("conn(%d) doesn't exist", cb->cli_fd);
                 return ERR_CONNECTION_NOT_EXIST;            
             }
+
             if(!cb->is_ssl){
                 switch(cb->type){
                 case LISTEN:

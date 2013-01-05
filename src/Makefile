@@ -12,7 +12,7 @@ CC = gcc
 INCLUDE = ./inc
 
 
-CFLAGS = -Wall -g -I$(INCLUDE)
+CFLAGS = -Wall -Werror -g -I$(INCLUDE)
 
 LIB = -lssl -lcrypto
 

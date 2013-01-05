@@ -14,11 +14,11 @@
 #define DEBUG
 
 #ifdef DEBUG
-#define dbg_printf(fmt, args...) do{fprintf(stdout, "(%s)dbg:"fmt"\n",  \
-                                            __func__,                   \
+#define dbg_printf(fmt, args...) do{fprintf(stdout, "(%s@line%d)dbg:"fmt"\n", \
+                                            __func__,__LINE__,          \
                                             ##args); fflush(stdout);}while(0)
-#define err_printf(fmt, args...) do{fprintf(stderr, "(%s)err:"fmt"\n", \
-                                            __func__,                   \
+#define err_printf(fmt, args...) do{fprintf(stderr, "(%s@line%d)err:"fmt"\n", \
+                                            __func__,__LINE__,          \
                                             ##args); fflush(stderr);}while(0)
 #else
 #define dbg_printf(fmt, args...)

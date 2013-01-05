@@ -29,7 +29,7 @@
 #define BUF_OUT_SIZE 4096
 
 #define BUF_HDR_SIZE 2048
-#define TIMEOUT_TIME 1    /* in sec */
+#define TIMEOUT_TIME 10    /* in sec */
 #define HASH_SIZE    0xff     /* size of hash size of client list */
 
 #define DEFAULT_FD "../static_site/"

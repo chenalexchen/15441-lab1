@@ -20,7 +20,7 @@ void *strncpy_alloc(char *str, int len)
     char *s = (char *)malloc(len + 1);
     if(!s)
         return NULL;
-    s = strncpy(s, str, len);
+    s = memcpy(s, str, len);
     *(s+len) = 0;
     return s;
 }
