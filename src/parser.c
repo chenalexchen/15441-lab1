@@ -30,7 +30,7 @@ void *strncpy_alloc(char *str, int len)
 static void shift_req_msg(cli_cb_t *cb)
 {
     char *buf = cb->buf_proc;
-    cb->buf_proc_pos -= (cb->par_msg_end - cb->buf_proc);
+    cb->buf_proc_ctr -= (cb->par_msg_end - cb->buf_proc);
      while(*(cb->par_msg_end)){ 
          *(buf++) = *(cb->par_msg_end++); 
      } 
@@ -41,6 +41,7 @@ static void shift_req_msg(cli_cb_t *cb)
 
 static int parse_req_line(cli_cb_t *cb, req_msg_t *req_msg)
 {
+    int ret;
     cb->par_pos = cb->buf_proc;
     /* skip "annoying" char at the beginning of req msg */
     cb->par_pos += strspn(cb->par_pos, " \r\n");
@@ -50,7 +51,8 @@ static int parse_req_line(cli_cb_t *cb, req_msg_t *req_msg)
         if(!tmp_str){
             /* TODO: err */
             err_printf("no mem");
-            return ERR_NO_MEM;
+            ret = ERR_NO_MEM;
+            goto out1;
         }
         dbg_printf("mthd(%s)",tmp_str);
         if(!strcmp(tmp_str, "GET")){
@@ -72,7 +74,6 @@ static int parse_req_line(cli_cb_t *cb, req_msg_t *req_msg)
         }else{
             req_msg->req_line.req = EXT;
         }
-        free(tmp_str);
     }
     cb->par_pos = cb->par_next + 1;
 
@@ -82,12 +83,14 @@ static int parse_req_line(cli_cb_t *cb, req_msg_t *req_msg)
                                                      - cb->par_pos);
         if(!req_msg->req_line.url){
 
-            return ERR_NO_MEM;
+            ret = ERR_NO_MEM;
+            goto out2;
         }
         dbg_printf("%s", req_msg->req_line.url);        
     }else{
 
-        return ERR_PARSE_MALFORMAT_REQ_MSG;
+        ret = ERR_PARSE_MALFORMAT_REQ_MSG;
+        goto out2;
     }
     cb->par_pos = cb->par_next + 1;
     
@@ -97,32 +100,53 @@ static int parse_req_line(cli_cb_t *cb, req_msg_t *req_msg)
                                                      cb->par_pos);
         if(!req_msg->req_line.ver){
 
-            return ERR_NO_MEM;
+            ret = ERR_NO_MEM;
+            goto out3;
         }
         dbg_printf("%s", req_msg->req_line.ver);
     }else{
 
-        return ERR_PARSE_MALFORMAT_REQ_MSG;
+        ret = ERR_PARSE_MALFORMAT_REQ_MSG;
+        goto out3;
     }
     cb->par_pos = cb->par_next + sizeof(LINE_END_STR)-1;
+    free(tmp_str);
+    return 0;
+
+
+ out3:
+    free(req_msg->req_line.url);
+ out2:
+    free(tmp_str);
+ out1:
+    return ret;
+}
+
+static int parse_msg_hdr_semantic(msg_hdr_t *msg_hdr, req_msg_t *req_msg)
+{
+    if(!strcmp(msg_hdr->field_name, "Content-Length")){
+        sscanf(msg_hdr->field_value, "%d", &req_msg->msg_body_len);
+    }
     return 0;
 }
 
 int parse_msg_hdr(cli_cb_t *cb, req_msg_t *req_msg)
 {
+    int ret;
     msg_hdr_t *msg_hdr = (msg_hdr_t *)malloc(sizeof(msg_hdr_t));
     if(!msg_hdr){
-
-        return ERR_NO_MEM;
+        ret = ERR_NO_MEM;
+        goto out1;
     }
     if(!(cb->par_next = strchr(cb->par_pos, ':'))){
         /* parse err */
-        return ERR_PARSE_MALFORMAT_REQ_MSG;
+        ret =  ERR_PARSE_MALFORMAT_REQ_MSG;
+        goto out2;
     }
     if(!(msg_hdr->field_name = strncpy_alloc(cb->par_pos, 
                                       cb->par_next - cb->par_pos))){
-
-        return ERR_NO_MEM;
+        ret = ERR_NO_MEM;
+        goto out2;
     }
     cb->par_pos = cb->par_next + 1;
     
@@ -132,22 +156,39 @@ int parse_msg_hdr(cli_cb_t *cb, req_msg_t *req_msg)
     /* parse the field value */
     if(!(cb->par_next = strstr(cb->par_pos, LINE_END_STR))){
 
-        return ERR_PARSE_MALFORMAT_REQ_MSG;
+        ret = ERR_PARSE_MALFORMAT_REQ_MSG;
+        goto out3;
     }
 
     if(!(msg_hdr->field_value = strncpy_alloc(cb->par_pos,
                                            cb->par_next - cb->par_pos))){
 
-        return ERR_NO_MEM;
+        ret = ERR_NO_MEM;
+        goto out3;
     }
     
     cb->par_pos = cb->par_next + sizeof(LINE_END_STR)-1;
     
+    if((ret = parse_msg_hdr_semantic(msg_hdr, req_msg)) < 0){
+        err_printf("parse_msg_hdr_semantic failed, ret = 0x%x", -ret);
+        goto out4;
+    }
     /* add msg_hdr into req */
     insert_msg_hdr(msg_hdr, req_msg);
     dbg_printf("msg_hdr field_name: (%s) \t field_value: (%s)", 
                msg_hdr->field_name, msg_hdr->field_value);
+    
+    /* parse msg hdr semantically */
+    
     return 0;
+ out4:
+    free(msg_hdr->field_value);
+ out3:
+    free(msg_hdr->field_name);
+ out2:
+    free(msg_hdr);
+ out1:
+    return ret;
 }
 
 
@@ -172,6 +213,20 @@ void insert_req_msg(req_msg_t *msg, cli_cb_t *cb)
     return;
 }
 
+static int parse_msg_body(cli_cb_t *cb, req_msg_t *msg)
+{
+    if(msg->req_line.req == POST && msg->msg_body_len != -1){
+        /* parse the msg body */
+        cb->par_pos = cb->par_msg_end;
+        msg->msg_body = strncpy_alloc(cb->par_pos, msg->msg_body_len);
+        if(!msg->msg_body){
+            err_printf("NO MEM");
+            return ERR_NO_MEM;
+        }
+    }
+    return 0;
+}
+
 /* function must be invoked when req_msg is re-initialized */
 int parse_req_msg(cli_cb_t *cb)
 {
@@ -191,8 +246,10 @@ int parse_req_msg(cli_cb_t *cb)
         
         req_msg = (req_msg_t *)malloc(sizeof(req_msg_t));
 
-        if(!req_msg)
-            return ERR_NO_MEM;
+        if(!req_msg){
+            ret = ERR_NO_MEM;
+            goto out1;
+        }
         /* init the req msg */
         init_req_msg(req_msg);
         
@@ -200,33 +257,41 @@ int parse_req_msg(cli_cb_t *cb)
         if((ret = parse_req_line(cb,req_msg)) < 0){
             /* parse req line err */
             dbg_printf("parse_req_line err");
-            return ret;
+            goto out2;
         }
         while(!is_parse_end(cb)){
             if((ret = parse_msg_hdr(cb,req_msg)) < 0){
                 err_printf("parse_msg_hdr failed");
-                return ret;
+                goto out2;
             }
             
+        }
+        if((ret = parse_msg_body(cb, req_msg)) < 0){
+            err_printf("parse_msg_body failed");
+            goto out2;
         }
         insert_req_msg(req_msg, cb);
         dbg_printf("parse_req_msg finished");
         shift_req_msg(cb);
     }
     return 0;
+ out2:
+    free(req_msg);
+ out1:
+    return ret;
 }
 
 static int shift_buf_in(cli_cb_t *cb)
 {
 
     /* copy buf_in to buf_proc */
-    if(cb->buf_in_pos + cb->buf_proc_pos > BUF_PROC_SIZE){
+    if(cb->buf_in_ctr + cb->buf_proc_ctr > BUF_PROC_SIZE){
         /* TODO:buf_proc will be overflowed, truncate the req and process */
         err_printf("buf_proc overflowed");
         return ERR_PARSE_REQ_MSG_TOO_LONG;
     }
     strncat(cb->buf_proc, cb->buf_in, BUF_IN_SIZE);
-    cb->buf_proc_pos += cb->buf_in_pos;
+    cb->buf_proc_ctr += cb->buf_in_ctr;
     /* clear the buf in */
     *(cb->buf_in) = 0;
     return 0;
@@ -255,7 +320,9 @@ void init_req_msg(req_msg_t *msg)
 
     msg->req_line.ver = NULL;
     msg->req_line.url = NULL;
-
+    
+    msg->msg_body = NULL;
+    msg->msg_body_len = -1;
     INIT_LIST_HEAD(&msg->msg_hdr_list);
 }
 
@@ -298,6 +365,7 @@ static void free_msg_hdr(msg_hdr_t *msg_hdr)
         free(msg_hdr->field_value);
         msg_hdr->field_value = NULL;
     }
+    free(msg_hdr);
     return;
 }
 
@@ -310,6 +378,9 @@ void free_req_msg(req_msg_t *msg)
                             msg_hdr_link){
         list_del(&hdr->msg_hdr_link);
         free_msg_hdr(hdr);
-        free(hdr);
     }
+    if(msg->msg_body)
+        free(msg->msg_body);
+    
+    free(msg);
 }

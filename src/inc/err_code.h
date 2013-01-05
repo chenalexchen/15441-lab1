@@ -22,5 +22,10 @@
 #define ERR_SOCKET           -0x109
 #define ERR_BIND             -0x10a
 #define ERR_LISTEN           -0x10b
-
+#define ERR_BUF              -0x10c
+#define ERR_UNKNOWN_CLI_TYPE -0x10d
+#define ERR_CLOSE_SOCKET     -0x10e
+#define ERR_SSL_NEW          -0x10f
+#define ERR_SSL_ACCEPT       -0x110
+#define ERR_CLOSE_SSL_SOCKET -0x111
 #endif /* end of __ERR_CODE_H_ */

@@ -45,6 +45,10 @@ struct req_msg{
     struct req_line req_line;
     struct list_head msg_hdr_list;
     struct list_head req_msg_link;
+    char *msg_body;
+    
+    /* some booking field */
+    int msg_body_len;
 };
 
 

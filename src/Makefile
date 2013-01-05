@@ -12,11 +12,12 @@ CC = gcc
 INCLUDE = ./inc
 
 
-CFLAGS = -Wall -Werror -g -I$(INCLUDE)
+CFLAGS = -Wall -g -I$(INCLUDE)
 
+LIB = -lssl -lcrypto
 
 # object files needed by server
-OBJ = server.o parser.o
+OBJ = server.o parser.o daemon.o
 
 
 
@@ -24,7 +25,7 @@ OBJ = server.o parser.o
 
 
 srv: $(OBJ)
-	$(CC) $(OBJ) -o srv $(CFLAGS)
+	$(CC) $(OBJ) -o srv $(CFLAGS) $(LIB)
 
 
 %.o: %.c
