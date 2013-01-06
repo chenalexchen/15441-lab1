@@ -75,11 +75,6 @@ static void insert_fd(int fd, fd_set *set);
 static void reelect_max_fd(void);
 
 
-/* for cli_cb handling */
-static cli_cb_t *get_cli_cb(int cli_fd);
-static int init_cli_cb(cli_cb_t *cli_cb, struct sockaddr_in *addr, int cli_fd,
-                       cli_cb_type_t type, int is_ssl);
-static void free_cli_cb(cli_cb_t *cli_cb);
 static int is_buf_in_empty(cli_cb_t *cli_cb);
 static void set_buf_ctr(cli_cb_t *cli_cb, int ctr);
 
@@ -164,18 +159,21 @@ static void init_global_var(void)
 }
 
 
-static int init_cli_cb(cli_cb_t *cli_cb, struct sockaddr_in *addr, int cli_fd,
-                       cli_cb_type_t type, int is_ssl)
+int init_cli_cb(cli_cb_t *cli_cb, struct sockaddr_in *addr, int cli_fd_read,
+                int cli_fd_write,
+                cli_cb_type_t type, int is_ssl)
 {    
     if(addr){
         cli_cb->cli_addr = *addr;
     }
-    cli_cb->cli_fd = cli_fd;
+    cli_cb->cli_fd_read = cli_fd_write;
     /* init various buffers */
     memset(cli_cb->buf_in, 0, BUF_IN_SIZE);
     cli_cb->buf_in_ctr = 0;
     memset(cli_cb->buf_proc, 0, BUF_PROC_SIZE);
     cli_cb->buf_proc_ctr = 0;
+
+    cli_cb->handle_req_msg_pending = 0;
 
     /* init mthd */
     cli_cb->type = type;
@@ -188,12 +186,15 @@ static int init_cli_cb(cli_cb_t *cli_cb, struct sockaddr_in *addr, int cli_fd,
             cli_cb->mthd.recv = NULL;
             cli_cb->mthd.send = NULL;
             cli_cb->mthd.close = tcp_close_socket;
+            cli_cb->mthd.is_handle_req_msg_pending = NULL;
             break;
         case CLI:
             cli_cb->mthd.new_connection = NULL;
             cli_cb->mthd.recv = tcp_recv_wrapper;
             cli_cb->mthd.send = tcp_send_wrapper;
             cli_cb->mthd.close = tcp_close_socket;
+            cli_cb->mthd.is_handle_req_msg_pending = 
+                    is_handle_req_msg_pending;
             break;
         default:
             err_printf("unknown cli type");
@@ -206,12 +207,16 @@ static int init_cli_cb(cli_cb_t *cli_cb, struct sockaddr_in *addr, int cli_fd,
             cli_cb->mthd.recv = NULL;
             cli_cb->mthd.send = NULL;
             cli_cb->mthd.close = ssl_close_socket;
+            cli_cb->mthd.is_handle_req_msg_pending = NULL;
+
             break;
         case CLI:
             cli_cb->mthd.new_connection = NULL;
             cli_cb->mthd.recv = ssl_recv_wrapper;
             cli_cb->mthd.send = ssl_send_wrapper;
             cli_cb->mthd.close = ssl_close_socket;
+            cli_cb->mthd.is_handle_req_msg_pending = 
+                    is_handle_req_msg_pending;
             break;
         default:
             err_printf("unknown cli type");
@@ -226,7 +231,8 @@ static int init_cli_cb(cli_cb_t *cli_cb, struct sockaddr_in *addr, int cli_fd,
 
     INIT_LIST_HEAD(&cli_cb->req_msg_list);
     
-    dbg_printf("add new client cb(%d)", cli_cb->cli_fd);
+    dbg_printf("add new client cb(%d)", 
+               cli_cb->cli_fd_read);
     /* insert the client cb into hash table */
     list_add_tail(&cli_cb->cli_link, &cli_list[cli_fd % HASH_SIZE]);
 
@@ -234,9 +240,10 @@ static int init_cli_cb(cli_cb_t *cli_cb, struct sockaddr_in *addr, int cli_fd,
 }
 
 
-static void free_cli_cb(cli_cb_t *cli_cb)
+void free_cli_cb(cli_cb_t *cli_cb)
 {
-        dbg_printf("try to free cli_cb(%d)", cli_cb->cli_fd);
+        dbg_printf("try to free cli_cb(%d)", 
+                   cli_cb->cli_fd_read);
         if(cli_cb->buf_out)
                 free(cli_cb->buf_out);
         cli_cb->buf_out = NULL;
@@ -246,6 +253,10 @@ static void free_cli_cb(cli_cb_t *cli_cb)
 }
 
 
+static int is_handle_req_msg_pending(cli_cb_t *cb)
+{
+        return cb->handle_req_msg_pending;
+}
 
 
 static int is_buf_in_empty(cli_cb_t *cli_cb)
@@ -260,13 +271,18 @@ static void set_buf_ctr(cli_cb_t *cli_cb, int ctr)
         cli_cb->buf_in_ctr = ctr;
 }
 
-static cli_cb_t *get_cli_cb(int cli_fd)
+cli_cb_t *get_cli_cb(int cli_fd, int rw)
 {
         cli_cb_t *item;
         list_for_each_entry(item, &cli_list[cli_fd % HASH_SIZE], cli_link){
-
-                if(item->cli_fd == cli_fd){
-                        return item;
+                if(!rw){
+                        if(item->cli_fd_read == cli_fd){
+                                return item;
+                        }
+                }else{
+                        if(item->cli_fd_write == cli_fd){
+                                return item;
+                        }
                 }
         }
         return NULL;
@@ -293,8 +309,8 @@ static int tcp_close_socket(cli_cb_t *cb)
 {
         int ret;
         
-        dbg_printf("close socket(%d)", cb->cli_fd);
-        if((ret = close_socket(cb->cli_fd)) < 0){
+        dbg_printf("close socket(%d)", cb->cli_fd_read);
+        if((ret = close_socket(cb->cli_fd_read)) < 0){
                 ret = ERR_CLOSE_SOCKET;
                 return ret;
         }
@@ -306,14 +322,14 @@ static int tcp_close_socket(cli_cb_t *cb)
 static int ssl_close_socket(cli_cb_t *cb)
 {
     int ret;
-    dbg_printf("close socket (%d)", cb->cli_fd);
+    dbg_printf("close socket (%d)", cb->cli_fd_read);
     if((ret = SSL_shutdown(cb->ssl)) < 0){
         ret = ERR_CLOSE_SSL_SOCKET;
         return ret;
     }
     
     SSL_free(cb->ssl);
-    if((ret = close_socket(cb->cli_fd)) < 0){
+    if((ret = close_socket(cb->cli_fd_read)) < 0){
         ret = ERR_CLOSE_SOCKET;
         return ret;
     }
@@ -375,7 +391,7 @@ int establish_socket(void)
         return ERR_NO_MEM;
     }
     /* init control block */
-    if((ret = init_cli_cb(cb, NULL, sock, LISTEN, 0)) < 0){
+    if((ret = init_cli_cb(cb, NULL, sock, sock, LISTEN, 0)) < 0){
         free(cb);
         return ret;
     }
@@ -414,7 +430,7 @@ int establish_socket(void)
         return ERR_NO_MEM;
     }
     /* init control block */
-    if((ret = init_cli_cb(cb, NULL, sock, LISTEN, 1)) < 0){
+    if((ret = init_cli_cb(cb, NULL, sock, sock, LISTEN, 1)) < 0){
         free(cb);
         return ret;
     }
@@ -442,7 +458,7 @@ static int tcp_new_connection(cli_cb_t *cb)
     cli_cb_t *cb_new;
     int ret;
     cli_size = sizeof(cli_addr);
-    if ((cli_sock = accept(cb->cli_fd, (struct sockaddr *) &cli_addr,
+    if ((cli_sock = accept(cb->cli_fd_read, (struct sockaddr *) &cli_addr,
                            &cli_size)) == -1) {
         cb->mthd.close(cb);
         err_printf("socket accept failure\n");
@@ -457,7 +473,7 @@ static int tcp_new_connection(cli_cb_t *cb)
         return ERR_NO_MEM;
     }
     /* init control block */
-    if((ret = init_cli_cb(cb_new, &cli_addr, cli_sock, CLI, 0)) < 0){
+    if((ret = init_cli_cb(cb_new, &cli_addr, cli_sock, cli_sock, CLI, 0)) < 0){
         free(cb_new);
         return ret;
     }
@@ -465,7 +481,8 @@ static int tcp_new_connection(cli_cb_t *cb)
     insert_fd(cli_sock, &read_fds);
     insert_fd(cli_sock, &write_fds);
 
-    dbg_printf("conn(%d) create conn(%d)", cb->cli_fd, cb_new->cli_fd);
+    dbg_printf("conn(%d) create conn(%d)", cb->cli_fd_read, 
+               cb_new->cli_fd_read);
     return 0;
 }
 
@@ -478,8 +495,8 @@ static int ssl_new_connection(cli_cb_t *cb)
     int ret;
 
     cli_size = sizeof(cli_addr);
-    dbg_printf("accept fd(%d)", cb->cli_fd);
-    if ((cli_sock = accept(cb->cli_fd, (struct sockaddr *) &cli_addr,
+    dbg_printf("accept fd(%d)", cb->cli_fd_read);
+    if ((cli_sock = accept(cb->cli_fd_read, (struct sockaddr *) &cli_addr,
                            &cli_size)) == -1) {
         cb->mthd.close(cb);
         err_printf("socket accept failure\n");
@@ -492,7 +509,7 @@ static int ssl_new_connection(cli_cb_t *cb)
     }
 
     /* init control block */
-    if((ret = init_cli_cb(cb_new, &cli_addr, cli_sock, CLI, 1)) < 0){
+    if((ret = init_cli_cb(cb_new, &cli_addr, cli_sock, cli_sock, CLI, 1)) < 0){
         free(cb_new);
         return ret;
     }
@@ -501,8 +518,8 @@ static int ssl_new_connection(cli_cb_t *cb)
         return ERR_SSL_NEW;
     }
     dbg_printf("SSL_new succeed");
-    SSL_set_fd(cb_new->ssl, cb_new->cli_fd);
-    dbg_printf("set fd(%d) succeed", cb_new->cli_fd);
+    SSL_set_fd(cb_new->ssl, cb_new->cli_fd_read);
+    dbg_printf("set fd(%d) succeed", cb_new->cli_fd_read);
     if((ret = SSL_accept(cb_new->ssl)) < 0){
         ERR_print_errors_fp(stderr);
         return ERR_SSL_ACCEPT;
@@ -514,108 +531,140 @@ static int ssl_new_connection(cli_cb_t *cb)
     insert_fd(cli_sock, &read_fds);
     insert_fd(cli_sock, &write_fds);
 
-    dbg_printf("conn(%d) create conn(%d)", cb->cli_fd, cb_new->cli_fd);
+    dbg_printf("conn(%d) create conn(%d)", cb->cli_fd_read, 
+               cb_new->cli_fd_read);
     return 0;
 }
 
 int tcp_recv_wrapper(cli_cb_t *cb)
 {
-    int readctr;
-    if(is_buf_in_empty(cb)){
-        if((readctr = recv(cb->cli_fd, cb->buf_in, 
-                           BUF_IN_SIZE, 0)) 
-           > 0){
-            dbg_printf("reading socket (%i), readctr(%d)",
-                           cb->cli_fd, readctr);
-            /* add null terminator to cb->buf_in */
-            *(cb->buf_in + readctr) = 0;
-            set_buf_ctr(cb, readctr);
-                /* then do nothing */
+        int readctr;
+        if(is_buf_in_empty(cb)){
+                if((readctr = recv(cb->cli_fd_read, cb->buf_in, 
+                                   BUF_IN_SIZE, 0)) n
+                   > 0){
+                        dbg_printf("reading socket (%i), readctr(%d)",
+                                   cb->cli_fd_read, readctr);
+                        /* add null terminator to cb->buf_in */
+                        *(cb->buf_in + readctr) = 0;
+                        set_buf_ctr(cb, readctr);
+                        /* then do nothing */
+                }else{
+                    /* if no reading is availale, return NULL */
+                        cb->mthd.close(cb);
+                        dbg_printf("conn (%i) is closed", cb->cli_fd_read);
+                        
+                        return 0;
+                }
         }else{
-            /* if no reading is availale, return NULL */
-            cb->mthd.close(cb);
-            dbg_printf("conn (%i) is closed", cb->cli_fd);
-
-            return 0;
+                dbg_printf("buf not emptied, socket(%d)",cb->cli_fd_read);
+                return ERR_BUF;
         }
-    }else{
-        dbg_printf("buf not emptied, socket(%d)",cb->cli_fd);
-        return ERR_BUF;
-    }
-    return 0;
+        return 0;
 }
 
 
 
 int ssl_recv_wrapper(cli_cb_t *cb)
 {
-    int readctr;
-    if(is_buf_in_empty(cb)){
-        if((readctr = SSL_read(cb->ssl, cb->buf_in, 
-                           BUF_IN_SIZE)) 
-           > 0){
-            dbg_printf("reading socket (%i), readctr(%d)",
-                           cb->cli_fd, readctr);
-            /* add null terminator to cb->buf_in */
-            *(cb->buf_in + readctr) = 0;
-            set_buf_ctr(cb, readctr);
-                /* then do nothing */
+        int readctr;
+        if(is_buf_in_empty(cb)){
+                if((readctr = SSL_read(cb->ssl, cb->buf_in, 
+                                       BUF_IN_SIZE)) 
+                   > 0){
+                        dbg_printf("reading socket (%i), readctr(%d)",
+                                   cb->cli_fd_read, readctr);
+                        /* add null terminator to cb->buf_in */
+                        *(cb->buf_in + readctr) = 0;
+                        set_buf_ctr(cb, readctr);
+                        /* then do nothing */
+                }else{
+                        /* if no reading is availale, return NULL */
+                        cb->mthd.close(cb);
+                        dbg_printf("conn (%i) is closed", cb->cli_fd_read);
+                        
+                        return 0;
+                }
         }else{
-            /* if no reading is availale, return NULL */
-            cb->mthd.close(cb);
-            dbg_printf("conn (%i) is closed", cb->cli_fd);
-
-            return 0;
+                dbg_printf("buf not emptied, socket(%d)",cb->cli_fd_read);
+                return ERR_BUF;
         }
-    }else{
-        dbg_printf("buf not emptied, socket(%d)",cb->cli_fd);
-        return ERR_BUF;
-    }
-    return 0;
+        return 0;
+}
+
+int cgi_recv_wrapper(cli_cb_t *cb)
+{
+        int readctr;
+        if(is_buf_in_empty(cb->cgi_parent)){
+                if((readctr = recv(cb->cli_fd_read, cb->buf_in, 
+                                   BUF_IN_SIZE, 0)) n
+                   > 0){
+                        dbg_printf("reading socket (%i), readctr(%d)",
+                                   cb->cli_fd_read, readctr);
+                        /* add null terminator to cb->buf_in */
+                        *(cb->buf_in + readctr) = 0;
+                        set_buf_ctr(cb, readctr);
+                        /* then do nothing */
+                }else{
+                    /* if no reading is availale, return NULL */
+                        cb->mthd.close(cb);
+                        dbg_printf("conn (%i) is closed", cb->cli_fd_read);
+                        
+                        return 0;
+                }
+        }else{
+                dbg_printf("buf not emptied, socket(%d)",cb->cli_fd_read);
+                return ERR_BUF;
+        }
+        return 0;
+
 }
 
 static int tcp_send_wrapper(cli_cb_t *cb)
 {            
-    int sendctr;
-    if(cb->buf_out_ctr != -1){   
-        if((sendctr = send(cb->cli_fd, cb->buf_out, 
-                           cb->buf_out_ctr, 0))
-           != cb->buf_out_ctr){
-            cb->mthd.close(cb);
+        int sendctr;
+        if(cb->buf_out_ctr != -1){   
+                if((sendctr = send(cb->cli_fd_write, cb->buf_out, 
+                                   cb->buf_out_ctr, 0))
+                   != cb->buf_out_ctr){
+                        cb->mthd.close(cb);
 
-            err_printf("Error sending to client.\n");
-
-            return ERR_SEND;
-        }else{
-            dbg_printf("buf sent, conn (%d), ctr(%d)", cb->cli_fd,
-                       cb->buf_out_ctr);
-            cb->buf_out_ctr = -1;
+                        err_printf("Error sending to client.\n");
+                        
+                        return ERR_SEND;
+                }else{
+                        dbg_printf("buf sent, conn (%d), ctr(%d)", 
+                                   cb->cli_fd_write,
+                                   cb->buf_out_ctr);
+                        cb->buf_out_ctr = -1;
+                }
         }
-    }
-    return 0;
+        return 0;
 }
 
 
 static int ssl_send_wrapper(cli_cb_t *cb)
 {            
-    int sendctr;
-    if(cb->buf_out_ctr != -1){   
-        if((sendctr = SSL_write(cb->ssl, cb->buf_out, 
-                                cb->buf_out_ctr))
-           != cb->buf_out_ctr){
-            cb->mthd.close(cb);
+        int sendctr;
+        if(cb->buf_out_ctr != -1){   
+                if((sendctr = SSL_write(cb->ssl, cb->buf_out, 
+                                        cb->buf_out_ctr))
+                   != cb->buf_out_ctr){
+                        cb->mthd.close(cb);
+                        
+                        err_printf("send_ctr (%d), buf_out_ctr(%d).\n", 
+                                   sendctr, 
+                                   cb->buf_out_ctr);
 
-            err_printf("send_ctr (%d), buf_out_ctr(%d).\n", sendctr, 
-                       cb->buf_out_ctr);
-
-            return ERR_SEND;
-        }else{
-            dbg_printf("buf sent, conn (%d), ctr(%d)", cb->cli_fd,
-                       cb->buf_out_ctr);
-            cb->buf_out_ctr = -1;
+                        return ERR_SEND;
+                }else{
+                        dbg_printf("buf sent, conn (%d), ctr(%d)", 
+                                   cb->cli_fd_write,
+                                   cb->buf_out_ctr);
+                        cb->buf_out_ctr = -1;
+                }
         }
-    }
-    return 0;
+        return 0;
 }
 
 
@@ -630,7 +679,7 @@ int kill_connections(void)
     for (i = 0; i < HASH_SIZE; i++){
         list_for_each_entry_safe(cb, cb_next, &cli_list[i], cli_link){
             list_del(&cb->cli_link);
-            if(close_socket(cb->cli_fd) < 0){
+            if(close_socket(cb->cli_fd_read) < 0){
                 err_printf("close socket failed, ret = 0x%x", -ret);
                 return ERR_SOCKET;
             }
@@ -664,6 +713,41 @@ void liso_shutdown(void)
     
 /* } */
 
+
+static int handle_pending_req_msg(cli_cb_t *cb)
+{
+        if(cb->buf_out_ctr == -1){ /* only when the buf_out is sent */
+                if(cb->fd_pos + BUF_OUT_SIZE < cb->statbuf.st_size){
+                        cb->fd_pos += BUF_OUT_SIZE;
+                        memcpy(cb->buf_out, cb->faddr + cb->fd_pos,
+                               BUF_OUT_SIZE);
+                        cb->buf_out_ctr = BUF_OUT_SIZE;
+                        cb->buf_out[cb->buf_out_ctr] = 0;
+                        cb->handle_req_msg_pending = 1;
+                }else{
+                        ctr = cb->statbuf.st_size - 
+                                cb->fd_pos;
+                        memcpy(cb->buf_out, cb->faddr + cb->fd_pos,
+                               ctr);
+                        cb->buf_out_ctr = ctr;
+                        cb->buf_out[cb->buf_out_ctr] = 0;
+                        if(munmap(cb->faddr, cb->statbuf.st_size) < 0){
+                                err_printf("munmap failed");
+                                ret = ERR_MMAP;
+                                goto out1;
+                        }
+                        close(cb->rsrc_fd);
+                        cb->is_handle_req_msg_pending = 0;
+                }
+        }
+        return 0;
+ out1:
+        close(cb->rsrc_fd);
+        cb->is_handle_req_msg_pending = 0;
+        return ret;
+}
+
+
 static int handle_head_mthd(req_msg_t *req_msg, cli_cb_t *cb)
 {
 
@@ -673,121 +757,126 @@ static int handle_head_mthd(req_msg_t *req_msg, cli_cb_t *cb)
 
 static int handle_get_mthd(req_msg_t *req_msg, cli_cb_t *cb)
 {
-    int ret;
-    /* fill in the header to return to */
-
-    char filename[FILENAME_MAX_LEN];
-    char buf_hdr[BUF_HDR_SIZE];
-    int ctr = 0; 
-    int fd;
-    struct stat statbuf;
-    char *faddr;
+        int ret;
+        /* fill in the header to return to */
         
-    /* copy the default folder */
-    strncpy(filename, DEFAULT_FD, FILENAME_MAX_LEN);
-    /* try to check whether the req url is / */
-    if(strstr(reg_msg->req_line.url, CGI_PREFIX) == reg_msg->req_line.url){
-            if(ret = handle_cgi(req_msg, cb)){
-                    err_printf("handle cgi failed, ret = 0x%x", -ret);
-                    return ret;                    
-            }
-    }else if(!strcmp(req_msg->req_line.url, FS_ROOT)){        
-            strncat(filename, "index.html", FILENAME_MAX_LEN);
-    }else{
-            strncat(filename, req_msg->req_line.url, FILENAME_MAX_LEN);
-    }
-    
-    dbg_printf("filename %s", filename);
-    if((fd = open(filename, O_RDONLY)) < 0){
-        dbg_printf("file not exist");
-        /* return 404 not found */
-        snprintf(buf_hdr, BUF_HDR_SIZE, "%s 404 Not Found\r\n\r\n", 
-                 req_msg->req_line.ver);        
+        char filename[FILENAME_MAX_LEN];
+        char buf_hdr[BUF_HDR_SIZE];
+        int ctr = 0; 
+        
+        struct stat statbuf;
+        char *faddr;
+        
 
-        if(cb->buf_out_ctr == -1 && cb->buf_out){
-            //            free(cb->buf_out);
-            cb->buf_out = NULL;
-        }
-
-        if(!(cb->buf_out = (char *)malloc(strlen(buf_hdr) + 1))){
-            ret = ERR_NO_MEM;
-            goto out1;
-        }
-        strcpy(cb->buf_out, buf_hdr);
-        cb->buf_out_ctr = strlen(buf_hdr) + 1;
-        dbg_printf("(buf_out)%s",cb->buf_out);
-
-    }else{       
-        /* resource exist */
-        if(fstat(fd, &statbuf) < 0){
-            ret = ERR_FSTAT;
-            goto out2;
-        }
-    
-        if((faddr = mmap(0, statbuf.st_size, PROT_READ, MAP_SHARED, fd, 0)) 
-           == MAP_FAILED){
-            dbg_printf("mmap failed");
-            ret = ERR_MMAP;
-            goto out2;
-        }
-        /* print out response line */
-        ctr += snprintf(buf_hdr, BUF_HDR_SIZE, "%s 200 OK\r\n", 
-                        req_msg->req_line.ver);
-        /* print out header field */
-        if(strstr(req_msg->req_line.url, "css")){
-            ctr += snprintf(buf_hdr + ctr, BUF_HDR_SIZE - ctr,
-                            "Content-Type: text/css\r\n");
-        }else if(strstr(req_msg->req_line.url, "png")){
-            ctr += snprintf(buf_hdr + ctr, BUF_HDR_SIZE - ctr,
-                            "Content-Type: image/png\r\n");
+        /* copy the default folder */
+        strncpy(filename, DEFAULT_FD, FILENAME_MAX_LEN);
+        /* try to check whether the req url is / */
+        if(strstr(reg_msg->req_line.url, CGI_PREFIX) 
+           == reg_msg->req_line.url){
+                if((ret = handle_cgi(req_msg, cb)) < 0){
+                        err_printf("handle cgi failed,"
+                                   "ret = 0x%x", -ret);
+                        return ret;                    
+                        }
+                return 0;
+        }else if(!strcmp(req_msg->req_line.url, FS_ROOT)){        
+                strncat(filename, "index.html", FILENAME_MAX_LEN);
         }else{
-            ctr += snprintf(buf_hdr + ctr, BUF_HDR_SIZE - ctr,
-                            "Content-Type: text/html\r\n");
-        }
-        ctr += snprintf(buf_hdr + ctr, BUF_HDR_SIZE - ctr,
-                        "Content-Length: %d\r\n", (int)statbuf.st_size);
-        ctr += snprintf(buf_hdr + ctr, BUF_HDR_SIZE - ctr,
-                        "\r\n");
-        
-        int buf_hdr_len = strlen(buf_hdr);
-        if(cb->buf_out_ctr ==-1 && cb->buf_out){
-            //            free(cb->buf_out);
-            cb->buf_out = NULL;
-        }
-        cb->buf_out = (char *)malloc(buf_hdr_len + 1 + statbuf.st_size);
-        dbg_printf("alloc buf_out(size %d)", buf_hdr_len + 
-                   (int)statbuf.st_size);
-        if(!cb->buf_out){
-            ret = ERR_NO_MEM;
-            goto out2;
+                strncat(filename, req_msg->req_line.url, 
+                        FILENAME_MAX_LEN);
         }
         
-        
-        memcpy(cb->buf_out, buf_hdr, buf_hdr_len);
-        dbg_printf("(but_out): %s", cb->buf_out);
-        memcpy(cb->buf_out + buf_hdr_len, faddr, statbuf.st_size);
-        
-        cb->buf_out_ctr = buf_hdr_len + statbuf.st_size;
-
-        cb->buf_out[cb->buf_out_ctr] = 0;
-
-        if(munmap(faddr, statbuf.st_size) < 0){
-            err_printf("munmap failed");
-            ret = ERR_MMAP;
-            goto out3;
+        dbg_printf("filename %s", filename);
+        if((cb->rsrc_fd = open(filename, O_RDONLY)) < 0){
+                dbg_printf("file not exist");
+                /* return 404 not found */
+                snprintf(buf_hdr, BUF_HDR_SIZE, 
+                         "%s 404 Not Found\r\n\r\n", 
+                         req_msg->req_line.ver);        
+                
+                strncpy(cb->buf_out, buf_hdr, BUF_OUT_SIZE);
+                cb->buf_out_ctr = strlen(buf_hdr) + 1;
+                dbg_printf("(buf_out)%s",cb->buf_out);
+                        
+        }else{       
+                /* resource exist */
+                if(fstat(cb->rsrc_fd, &cb->statbuf) < 0){
+                        ret = ERR_FSTAT;
+                        goto out2;
+                }
+                
+                if((cb->faddr = mmap(0, cb->statbuf.st_size, 
+                                     PROT_READ, MAP_SHARED, 
+                                     cb->rsrc_fd, 0)) 
+                   == MAP_FAILED){
+                        dbg_printf("mmap failed");
+                        ret = ERR_MMAP;
+                        goto out2;
+                }
+                /* print out response line */
+                ctr += snprintf(buf_hdr, BUF_HDR_SIZE, "%s 200 OK\r\n", 
+                                req_msg->req_line.ver);
+                /* print out header field */
+                if(strstr(req_msg->req_line.url, "css")){
+                        ctr += snprintf(buf_hdr + ctr, 
+                                        BUF_HDR_SIZE - ctr,
+                                        "Content-Type: text/css\r\n");
+                }else if(strstr(req_msg->req_line.url, "png")){
+                        ctr += snprintf(buf_hdr + ctr, 
+                                        BUF_HDR_SIZE - ctr,
+                                        "Content-Type: image/png\r\n");
+                }else{
+                        ctr += snprintf(buf_hdr + ctr, 
+                                        BUF_HDR_SIZE - ctr,
+                                        "Content-Type: text/html\r\n");
+                }
+                ctr += snprintf(buf_hdr + ctr, BUF_HDR_SIZE - ctr,
+                                "Content-Length: %d\r\n", 
+                                (int)statbuf.st_size);
+                ctr += snprintf(buf_hdr + ctr, BUF_HDR_SIZE - ctr,
+                                "\r\n");
+                
+                int buf_hdr_len = strlen(buf_hdr);
+                        
+                if(buf_hdr_len > BUF_OUT_SIZE){
+                        ret = ERR_HDR_TOO_LONG;
+                        goto out2;                        
+                }
+                        
+                memcpy(cb->buf_out, buf_hdr, buf_hdr_len);
+                dbg_printf("(but_out): %s", cb->buf_out);
+                
+                if(buf_hdr_len + statbuf.st_size <= BUF_OUT_SIZE){
+                        /* we could send out response once */
+                        memcpy(cb->buf_out + buf_hdr_len, cb->faddr,
+                               cb->statbuf.st_size);
+                        cb->buf_out_ctr = buf_hdr_len + statbuf.st_size;
+                        cb->buf_out[cb->buf_out_ctr] = 0;
+                        if(munmap(cb->faddr, cb->statbuf.st_size) < 0){
+                                err_printf("munmap failed");
+                                ret = ERR_MMAP;
+                                goto out2;
+                        }
+                        close(cb->rsrc_fd);
+                        cb->is_handle_req_msg_pending = 0;
+                }else{
+                        /* we send the response multiple times */
+                        cb->fd_pos = BUF_OUT_SIZE - buf_hdr_len;
+                        memcpy(cb->buf_out + buf_hdr_len, cb->faddr,
+                               cb->fd_pos);
+                        cb->buf_out_ctr = BUF_OUT_SIZE;
+                        cb->buf_out[cb->buf_out_ctr] = 0;
+                        cb->is_handle_req_msg_pending = 1;
+                }
+                        
         }
-        close(fd);
-    }
-    
-    return 0;
- out3:
-    dbg_printf("premature free buf_out");
-    free(cb->buf_out);
+        
+        return 0;
  out2:
-    if(!fd)
-        close(fd);
+        if(!cb->rsrc_fd)
+                close(cb->rsrc_fd);
  out1:
-    return ret;
+        return ret;
 }
 
 static int handle_post_mthd(req_msg_t *req_msg, cli_cb_t *cb)
@@ -809,30 +898,40 @@ static int handle_req_msg(cli_cb_t *cb)
         //dbg_printf("conn(%d) no req_msg pending", cb->cli_fd);
         return 0;
     }
-    /* if req msg list is not empty, try to handle one request */
-    req_msg = list_first_entry(&cb->req_msg_list, req_msg_t, req_msg_link);
-    list_del(&req_msg->req_msg_link);
+    if(!cb->is_handle_req_msg_pending(cb)){
+            /* if req msg list is not empty, try to handle one request */
+            req_msg = list_first_entry(&cb->req_msg_list, 
+                                       req_msg_t, req_msg_link);
+            list_del(&req_msg->req_msg_link);
     
-    
-    switch(req_msg->req_line.req){
-    case HEAD:
-        ret = handle_head_mthd(req_msg, cb);
-        break;
-    case GET:
-        ret = handle_get_mthd(req_msg, cb);
-        break;
-    case POST:
-        ret = handle_post_mthd(req_msg, cb);
-        break;
-    default:
-        ret = handle_unknown_mthd(req_msg, cb);
-        break;
+            switch(req_msg->req_line.req){
+            case HEAD:
+                    ret = handle_head_mthd(req_msg, cb);
+                    break;
+            case GET:
+                    ret = handle_get_mthd(req_msg, cb);
+                    break;
+            case POST:
+                    ret = handle_post_mthd(req_msg, cb);
+                    break;
+            default:
+                    ret = handle_unknown_mthd(req_msg, cb);
+                    break;
+            }
+            if(ret < 0){
+                    err_printf("ret = 0x%x", -ret);
+                    return ret;
+            }
+            free_req_msg(req_msg);
+            
+    }else{
+            /* handle pending req msg */
+            if((ret = handle_pending_req_msg(cb)) < 0){
+                    err_printf("handle_pending_req_msg failed, ret = 0x%x",
+                               -ret);
+                    return ret;
+            }
     }
-    if(ret < 0){
-        err_printf("ret = 0x%x", -ret);
-        return ret;
-    }
-    free_req_msg(req_msg);
 
     return 0;
 }
@@ -845,93 +944,98 @@ int process_request(void)
     cli_cb_t *cb;
     for(i = 0; i < max_fd; i++){
         if(FD_ISSET(i, &read_wait_fds)){
-            if(!(cb = get_cli_cb(i))){
-                err_printf("conn(%d) doesn't exist", i);
-                return ERR_CONNECTION_NOT_EXIST;
-            }
-            dbg_printf("prepare to process read, conn(%d)",i);
-            if(!cb->is_ssl){
-                switch(cb->type){
-                case LISTEN:
-                    dbg_printf("set up new connection (%d)", cb->cli_fd);
-                    if((ret = cb->mthd.new_connection(cb)) < 0){
-                        return ret;
-                    }
-                    break;
-                case CLI:
-                    if((ret = cb->mthd.recv(cb)) < 0){
-                        return ret;
-                    }
-                    
-                    /*parse the req here */
-                    if((ret = cb->mthd.parse(cb)) < 0){
-                        err_printf("parse failed, conn(%d)",i);
-                        return ret;
-                    }              
-                    
-                    break;
+                if(!(cb = get_cli_cb(i, 0))){
+                        err_printf("conn(%d) doesn't exist", i);
+                        return ERR_CONNECTION_NOT_EXIST;
                 }
-            }else{              /* if socket is ssl socket */
-                switch(cb->type){
-                case LISTEN:
-                    dbg_printf("set up new ssl connection (%d)", cb->cli_fd);
-                    if((ret = cb->mthd.new_connection(cb)) < 0){
-                        return ret;
-                    }
-                    break;
-                case CLI:
-                    if((ret = cb->mthd.recv(cb)) < 0){
-                        return ret;
-                    }
+                dbg_printf("prepare to process read, conn(%d)",i);
+                if(!cb->is_ssl){
+                        switch(cb->type){
+                        case LISTEN:
+                                dbg_printf("set up new connection (%d)", 
+                                           cb->cli_fd_read);
+                                if((ret = cb->mthd.new_connection(cb)) < 0){
+                                        return ret;
+                                }
+                                break;
+                        case CLI:
+                                if((ret = cb->mthd.recv(cb)) < 0){
+                                        return ret;
+                                }
                     
-                    /*parse the req here */
-                    if((ret = cb->mthd.parse(cb)) < 0){
-                        err_printf("parse failed, conn(%d)",i);
-                        return ret;
-                    }              
+                                /*parse the req here */
+                                if((ret = cb->mthd.parse(cb)) < 0){
+                                        err_printf("parse failed, conn(%d)",i);
+                                        return ret;
+                                }              
                     
-                    break;
+                                break;
+                        }
+                }else{              /* if socket is ssl socket */
+                        switch(cb->type){
+                        case LISTEN:
+                                dbg_printf("set up new ssl connection (%d)", 
+                                           cb->cli_fd_read);
+                                if((ret = cb->mthd.new_connection(cb)) < 0){
+                                        return ret;
+                                }
+                                break;
+                        case CLI:
+                                if((ret = cb->mthd.recv(cb)) < 0){
+                                        return ret;
+                                }
+                                
+                                /*parse the req here */
+                                if((ret = cb->mthd.parse(cb)) < 0){
+                                        err_printf("parse failed, conn(%d)",i);
+                                        return ret;
+                                }              
+                                
+                                break;
+                        }
                 }
-            }
         }
 
         /* check those write wait fds */
         if(FD_ISSET(i, &write_wait_fds)){ /* write to this connection */
-            
-            if(!(cb = get_cli_cb(i))){
-                err_printf("conn(%d) doesn't exist", cb->cli_fd);
-                return ERR_CONNECTION_NOT_EXIST;            
-            }
+                
+                if(!(cb = get_cli_cb(i, 1))){
+                        err_printf("conn(%d) doesn't exist", 
+                                   cb->cli_fd_read);
+                        return ERR_CONNECTION_NOT_EXIST;            
+                }
 
-            if(!cb->is_ssl){
-                switch(cb->type){
-                case LISTEN:
-                    break;
-                case CLI:
-                    if((ret = cb->mthd.handle_req_msg(cb)) < 0){
-                        err_printf("handle_req_msg failed, err = 0x%x", ret);
-                        return ret;
-                    }
-                    if((ret = cb->mthd.send(cb)) < 0){
-                        return ret;
-                    }
-                    break;
+                if(!cb->is_ssl){
+                        switch(cb->type){
+                        case LISTEN:
+                                break;
+                        case CLI:
+                                if((ret = cb->mthd.handle_req_msg(cb)) < 0){
+                                        err_printf("handle_req_msg failed,"
+                                                   " err = 0x%x", ret);
+                                        return ret;
+                                }
+                                if((ret = cb->mthd.send(cb)) < 0){
+                                        return ret;
+                                }
+                                break;
+                        }
+                }else{
+                        switch(cb->type){
+                        case LISTEN:
+                                break;
+                        case CLI:
+                                if((ret = cb->mthd.handle_req_msg(cb)) < 0){
+                                        err_printf("handle_req_msg failed,"
+                                                   " err = 0x%x", ret);
+                                        return ret;
+                                }
+                                if((ret = cb->mthd.send(cb)) < 0){
+                                        return ret;
+                                }
+                                break;
+                        }
                 }
-            }else{
-                switch(cb->type){
-                case LISTEN:
-                    break;
-                case CLI:
-                    if((ret = cb->mthd.handle_req_msg(cb)) < 0){
-                        err_printf("handle_req_msg failed, err = 0x%x", ret);
-                        return ret;
-                    }
-                    if((ret = cb->mthd.send(cb)) < 0){
-                        return ret;
-                    }
-                    break;
-                }
-            }
         }
     }
     return 0;

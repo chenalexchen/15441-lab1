@@ -32,5 +32,6 @@
 #define ERR_PIPE             -0x113
 #define ERR_FORK             -0x114
 #define ERR_EXEC             -0x115
-
+#define ERR_INIT_CLI         -0x116
+#define ERR_HDR_TOO_LONG     -0x117
 #endif /* end of __ERR_CODE_H_ */

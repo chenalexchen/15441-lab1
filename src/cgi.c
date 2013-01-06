@@ -167,7 +167,8 @@ int handle_cgi(req_msg_t *req_msg, cli_cb_t *cb)
         int envp_ctr;
 
         char cgi_filename[FILENAME_MAX_LEN];
-        int str_ctr;
+        
+        cli_cb_t *cgi_cb;
 
         int ret;
         if((ret = parse_cgi_url(req_msg)) < 0){
@@ -254,9 +255,23 @@ int handle_cgi(req_msg_t *req_msg, cli_cb_t *cb)
                 stdin_pipe[0] = -1;
 
                 /* TODO: set up a cgi io cli_cb for select */
+                
+                cgi_cb = (cli_cb_t *)malloc(sizeof(cli_cb_t));
+                if(!cgi_cb){
+                        ret = ERR_NO_MEM;
+                        goto out3;
+                }
+
+                if((ret = init_cli_cb(cgi_cb, NULL, stdout_pipe[0],
+                                      stdin_pipe[1], CGI, 0)) < 0){
+                        ret = ERR_INIT_CLI;
+                        goto out4;
+                }
+                
+                /* set the cgi_parent */
+                cgi_cb->cgi_parent = cb;
 
 
- 
                 if (write(stdin_pipe[1], POST_BODY, strlen(POST_BODY)) < 0){
 
                         err_printf("Error writing to spawned CGI program");
@@ -287,7 +302,8 @@ expected.\n");
 
     fprintf(stderr, "Process exiting, badly...how did we get here!?\n");
     return EXIT_FAILURE;        
-    
+ out4:
+    free(cgi_cb);    
  out3:
     if(stdout_pipe[0] != -1){
             close(stdout_pipe[0]);
