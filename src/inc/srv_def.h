@@ -35,7 +35,8 @@
 #define DEFAULT_FD "../static_site/"
 #define FILENAME_MAX_LEN 256
 
-
+#define CGI_PREFIX "/cgi/"
+#define CGI_FD     "./cgi/"
 struct cli_cb;
 typedef struct cli_cb cli_cb_t;
 
@@ -54,38 +55,44 @@ typedef struct cli_cb_mthd cli_cb_mthd_t;
 enum cli_cb_type{
     LISTEN,
     CLI,
+    CGI,
 };
 
 
 typedef enum cli_cb_type cli_cb_type_t;
 
 struct cli_cb{
-    struct sockaddr_in cli_addr;
-    int cli_fd;
-    cli_cb_type_t type;
-    int is_ssl;
+        struct sockaddr_in cli_addr;
+        int cli_fd;
+        cli_cb_type_t type;
+        int is_ssl;
+        
+        cli_cb_mthd_t mthd;
+        
+        SSL *ssl;
+        
+        char buf_in[BUF_IN_SIZE + 1];        /* recv'd str goes here */
+        int buf_in_ctr;
+        /* buf for processing pipelined reqs */   
+        char buf_proc[BUF_PROC_SIZE + 1]; 
+        int buf_proc_ctr;
+        char *buf_out;
+        int buf_out_ctr;
 
-    cli_cb_mthd_t mthd;
 
-    SSL *ssl;
+        cli_cb_t *cgi_parent;            /* the parent of cgi */
 
-    char buf_in[BUF_IN_SIZE + 1];        /* recv'd str goes here */
-    int buf_in_ctr;
-    char buf_proc[BUF_PROC_SIZE + 1]; /* buf for processing pipelined reqs */   
-    int buf_proc_ctr;
-    char *buf_out;
-    int buf_out_ctr;
 
-    /* variables for parser */
-    char *par_pos;
-    char *par_next;
-    char *par_msg_end;
-
-    /* req msg list */
-    struct list_head req_msg_list;                /* curr req msg to process */
-
-    int handle_req_pending;
-    struct list_head cli_link;              /* link for global hash table */
+        /* variables for parser */
+        char *par_pos;
+        char *par_next;
+        char *par_msg_end;
+        
+        /* req msg list */
+        struct list_head req_msg_list;      /* curr req msg to process */
+        
+        int handle_req_pending;
+        struct list_head cli_link;          /* link for global hash table */
     
 };
 
@@ -96,7 +103,7 @@ struct cli_cb{
 
 int parse_cli_cb(cli_cb_t *cb);
 void insert_req_msg(req_msg_t *msg, cli_cb_t *cb);
-
+int parse_cgi_url(req_msg_t *msg);
 
 
 
@@ -115,5 +122,9 @@ void liso_shutdown(void);
 
 /* daemonize the server */
 int daemonize(char* lock_file);
+
+
+/* cgi related functions */
+int handle_cgi(req_msg *req_msg, cli_cb_t *cb);
 
 #endif /* end of __SRV_DEF_H_ */

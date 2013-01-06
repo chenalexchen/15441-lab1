@@ -28,4 +28,9 @@
 #define ERR_SSL_NEW          -0x10f
 #define ERR_SSL_ACCEPT       -0x110
 #define ERR_CLOSE_SSL_SOCKET -0x111
+#define ERR_CGI_PARSE        -0x112
+#define ERR_PIPE             -0x113
+#define ERR_FORK             -0x114
+#define ERR_EXEC             -0x115
+
 #endif /* end of __ERR_CODE_H_ */

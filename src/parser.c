@@ -314,15 +314,88 @@ int parse_cli_cb(cli_cb_t *cb)
 
 
 
+int parse_cgi_url(req_msg_t *msg)
+{
+        char *cgi_url = msg->req_line.url;
+        char *curr_pos = NULL;
+        char *next_pos = NULL;
+        char *end_pos = NULL;
+        cgi_arg_t *arg;
+        
+        curr_pos = strstr(cgi_url, CGI_PREFIX);
+        if(curr_pos != cgi_url){
+                err_printf("cgi url(%s) not correct", msg->req_line.url);
+                ret = ERR_CGI_PARSE;
+                goto out1;
+        }
+        curr_pos += (sizeof(CGI_PREFIX) - 1);
+        
+        /* end_pos pointed at the null terminator */
+        end_pos = cgi_url + strlen(cgi_url);
+
+        if(!(next_pos = strchr(curr_pos, '?'))){
+                /* TODO: does this mean that current cgi doesn't have 
+                 * parameter?
+                 */
+                err_printf("? doesn't exist");
+                ret = ERR_PARSE;
+                goto out1;
+        }
+        
+        if(!(msg->req_line.url = (char *)strncpy_alloc(curr_pos, 
+                                                       next_pos - curr_pos))){
+                ret = ERR_NO_MEM;
+                goto out1;
+        }
+        while(!(next_pos = strchr(curr_pos, '&')) &&
+              !(next_pos = strchr(curr_pos, ':'))){
+                arg = (cgi_arg_t *)malloc(sizeof(cgi_arg_t));
+                if((ret = init_cgi_arg(arg)) < 0){
+                        goto out3;
+                }
+                if(!arg){
+                        ret = ERR_NO_MEM;
+                        goto out2;
+                }
+                
+                if(!(arg->arg = 
+                     (char *)strncpy_alloc(curr_pos, next_pos - curr_pos))){
+                        ret = ERR_NO_MEM;
+                        goto out3;
+                }
+                /* add the argument into the list */
+                list_add_tail(&arg->arg_link, 
+                              &msg->req_line.cgi_url.arg_link);
+                /* skip '&'(':') */
+                curr_pos = next_pos + 1;                
+        }
+
+        return 0;
+ out4:
+        clear_cgi_arg(arg);
+ out3:
+        free(arg);
+ out2:
+        clear_cgi_url(&msg->req_line.cgi_url);
+        free(msg->req_line.url);
+        msg->req_line.url = cgi_url;
+ out1:        
+        return ret;
+}
+
+
+
 
 void init_req_msg(req_msg_t *msg)
 {
 
     msg->req_line.ver = NULL;
     msg->req_line.url = NULL;
-    
+    init_cgi_url(&msg->req_line.cgi_url);
+
     msg->msg_body = NULL;
     msg->msg_body_len = -1;
+    msg->msg_hdr_ctr = 0;
     INIT_LIST_HEAD(&msg->msg_hdr_list);
 }
 
@@ -337,6 +410,7 @@ void init_msg_hdr(msg_hdr_t *hdr)
 void insert_msg_hdr(msg_hdr_t *hdr, req_msg_t *msg)
 {
     list_add_tail(&hdr->msg_hdr_link, &msg->msg_hdr_list);
+    msg->msg_hdr_ctr ++;
     return;
 }
 
@@ -383,4 +457,46 @@ void free_req_msg(req_msg_t *msg)
         free(msg->msg_body);
     
     free(msg);
+}
+
+
+
+int init_cgi_url(cgi_url_t *url)
+{
+        INIT_LIST_HEAD(&url->arg_list);
+        url->arg_ctr = 0;
+        return 0;
+}
+
+
+void clear_cgi_url(cgi_url_t *url)
+{
+        cgi_arg_t *arg_curr, *arg_next;
+        list_for_each_entry_safe(arg_curr, arg_next, &url>arg_list, 
+                                 arg_link){
+                if(arg_curr){
+                        free(arg_curr);                        
+                }
+        }
+        url->arg_ctr = 0;
+        return;
+}
+
+int init_cgi_arg(cgi_arg_t *arg)
+{
+        arg->arg = NULL;
+        return 0;
+}
+
+void clear_cgi_arg(cgi_arg_t *arg)
+{
+        if(arg->arg){
+                free(arg->arg);
+        }
+}
+
+void insert_cgi_arg(cgi_arg_t *arg, cgi_url_t *url)
+{
+        list_add_tail(&arg->arg_link, &url->arg_list);
+        url->arg_ctr ++;
 }

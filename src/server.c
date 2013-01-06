@@ -98,7 +98,6 @@ static int ssl_close_socket(cli_cb_t *cb);
 
 
 
-
 /** helper function to reelect max fd after one of fd is killed */
 static void reelect_max_fd(void)
 {
@@ -687,12 +686,17 @@ static int handle_get_mthd(req_msg_t *req_msg, cli_cb_t *cb)
     /* copy the default folder */
     strncpy(filename, DEFAULT_FD, FILENAME_MAX_LEN);
     /* try to check whether the req url is / */
-    if(!strcmp(req_msg->req_line.url, FS_ROOT)){
-        strncat(filename, "index.html", FILENAME_MAX_LEN);
+    if(strstr(reg_msg->req_line.url, CGI_PREFIX) == reg_msg->req_line.url){
+            if(ret = handle_cgi(req_msg, cb)){
+                    err_printf("handle cgi failed, ret = 0x%x", -ret);
+                    return ret;                    
+            }
+    }else if(!strcmp(req_msg->req_line.url, FS_ROOT)){        
+            strncat(filename, "index.html", FILENAME_MAX_LEN);
     }else{
-        strncat(filename, req_msg->req_line.url, FILENAME_MAX_LEN);
+            strncat(filename, req_msg->req_line.url, FILENAME_MAX_LEN);
     }
-
+    
     dbg_printf("filename %s", filename);
     if((fd = open(filename, O_RDONLY)) < 0){
         dbg_printf("file not exist");

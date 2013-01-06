@@ -29,10 +29,26 @@ enum req_mthd{
 };
 
 
+struct cgi_arg{
+        char *arg;
+        struct list_head arg_link;
+};
+
+typedef struct cgi_arg cgi_arg_t;
+
+struct cgi_url{
+        struct list_head arg_list;        
+        int arg_ctr;
+};
+
+typedef struct cgi_url cgi_url_t;
+
+
 struct req_line{
-    enum req_mthd req;
-    char *url;
-    char *ver;
+        enum req_mthd req;
+        char *url;
+        char *ver;
+        cgi_url_t cgi_url;
 };
 
 struct msg_hdr{
@@ -42,13 +58,16 @@ struct msg_hdr{
 };
 
 struct req_msg{
-    struct req_line req_line;
-    struct list_head msg_hdr_list;
-    struct list_head req_msg_link;
-    char *msg_body;
-    
-    /* some booking field */
-    int msg_body_len;
+        struct req_line req_line;
+        struct list_head msg_hdr_list;
+        int msg_hdr_ctr;
+        
+        char *msg_body;
+        
+        /* some booking field */
+        int msg_body_len;
+
+        struct list_head req_msg_link;
 };
 
 
@@ -65,6 +84,10 @@ void insert_msg_hdr(msg_hdr_t *hdr, req_msg_t *msg);
 
 void free_req_msg(req_msg_t *msg);
 
-
+int init_cgi_url(cgi_url_t *url);
+void clear_cgi_url(cgi_url_t *url);
+int init_cgi_arg(cgi_arg_t *arg);
+void clear_cgi_arg(cgi_arg_t *arg);
+void insert_cgi_arg(cgi_arg_t *arg, cgi_url_t *url);
 
 #endif /* end of __HTTP_H_ */
