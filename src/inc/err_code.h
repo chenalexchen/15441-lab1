@@ -34,4 +34,8 @@
 #define ERR_EXEC             -0x115
 #define ERR_INIT_CLI         -0x116
 #define ERR_HDR_TOO_LONG     -0x117
+#define ERR_CLOSE_FD         -0x118
+
+
+
 #endif /* end of __ERR_CODE_H_ */

@@ -12,12 +12,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 
-
-#define "srv_def.h"
-
-
+#include "srv_def.h"
+#include "http.h"
+#include "err_code.h"
+#include "debug_define.h"
 
 
 /**************** BEGIN CONSTANTS ***************/
@@ -59,7 +60,7 @@ char* POST_BODY = "This is the stdin body...\n";
 /**************** END CONSTANTS ***************/
 
 
-
+void execve_error_handler(void);
 
 
 static int create_cgi_arg(char ***argv, req_msg_t *req_msg, int ctr)
@@ -67,11 +68,11 @@ static int create_cgi_arg(char ***argv, req_msg_t *req_msg, int ctr)
         cgi_arg_t *arg_curr;
         int i;
         if(!ctr){
-                *argv = (char **)malloc((char *) * ctr);
+                (*argv) = (char **)malloc(sizeof(char *) * ctr);
                 if(!*argv){
                         return ERR_NO_MEM;
                 }
-                int i = 0;
+                i = 0;
                 list_for_each_entry(arg_curr,
                                     &req_msg->req_line.cgi_url.arg_list,
                                     arg_link){
@@ -94,37 +95,37 @@ static int create_cgi_env(char ***envp, req_msg_t *req_msg, int ctr)
         msg_hdr_t *msg_hdr;
         int name_len;
         int value_len;
-        int str_ctr;
+
         int i;
         if(!ctr){
-                *envp = (char **)malloc((char *) * ctr);
+                *envp = (char **)malloc(sizeof(char *) * ctr);
                 if(!*envp){
                         return ERR_NO_MEM;
                 }
-                int i = 0;
+                i = 0;
                 list_for_each_entry(msg_hdr,
                                     &req_msg->msg_hdr_list,
                                     msg_hdr_link){
                         name_len = strlen(msg_hdr->field_name);
                         value_len = strlen(msg_hdr->field_value);
                         /* + 2 because we need '=' and null term */
-                        (*argv)[i] = 
+                        (*envp)[i] = 
                                 (char *)malloc(strlen(msg_hdr->field_name) +
                                                strlen(msg_hdr->field_value) +
                                                2);
                         
-                        if(!(*argv)[i]){
+                        if(!(*envp)[i]){
                                 return ERR_NO_MEM;
                         }
                         
-                        memcpy((*argv)[i], msg_hdr->field_name,
+                        memcpy((*envp)[i], msg_hdr->field_name,
                                name_len);
                         /* add '=' */
-                        (*argv)[i][name_len] = '=';
+                        (*envp)[i][name_len] = '=';
                         
-                        memcpy((*argv)[i] + name_len + 1, msg_hdr->field_value,
+                        memcpy((*envp)[i] + name_len + 1, msg_hdr->field_value,
                                value_len);
-                        (*argv)[i][name_len + 1 + value_len] = 0;
+                        (*envp)[i][name_len + 1 + value_len] = 0;
 
                         i++;
                 }
@@ -134,23 +135,23 @@ static int create_cgi_env(char ***envp, req_msg_t *req_msg, int ctr)
         return 0;
 }
 
-static void clear_argv(char **argv, int ctr)
-{
-        int i;
-        for(i = 0; i < ctr; i++){
-                free(argv[i]);
-        }
-        return;
-}
+/* static void clear_argv(char **argv, int ctr) */
+/* { */
+/*         int i; */
+/*         for(i = 0; i < ctr; i++){ */
+/*                 free(argv[i]); */
+/*         } */
+/*         return; */
+/* } */
 
-static void clear_envp(char **envp, int ctr)
-{
-        int i;
-        for(i = 0; i < ctr; i++){
-                free(envp[i]);
-        }
-        return;
-}
+/* static void clear_envp(char **envp, int ctr) */
+/* { */
+/*         int i; */
+/*         for(i = 0; i < ctr; i++){ */
+/*                 free(envp[i]); */
+/*         } */
+/*         return; */
+/* } */
 
 int handle_cgi(req_msg_t *req_msg, cli_cb_t *cb)
 {
@@ -158,8 +159,6 @@ int handle_cgi(req_msg_t *req_msg, cli_cb_t *cb)
 
         int stdin_pipe[2] = {-1, -1};
         int stdout_pipe[2] = {-1, -1};
-        char buf[BUF_SIZE];
-        int readret;
 
         char **argv;
         char **envp;
@@ -247,14 +246,11 @@ int handle_cgi(req_msg_t *req_msg, cli_cb_t *cb)
         }
 
         if (pid > 0){
-
                 fprintf(stdout, "Parent: Heading to select() loop.\n");
                 close(stdout_pipe[1]);
                 stdout_pipe[1] = -1;
                 close(stdin_pipe[0]);
                 stdin_pipe[0] = -1;
-
-                /* TODO: set up a cgi io cli_cb for select */
                 
                 cgi_cb = (cli_cb_t *)malloc(sizeof(cli_cb_t));
                 if(!cgi_cb){
@@ -270,54 +266,28 @@ int handle_cgi(req_msg_t *req_msg, cli_cb_t *cb)
                 
                 /* set the cgi_parent */
                 cgi_cb->cgi_parent = cb;
-
-
-                if (write(stdin_pipe[1], POST_BODY, strlen(POST_BODY)) < 0){
-
-                        err_printf("Error writing to spawned CGI program");
-                        return EXIT_FAILURE;
-                }
-
-                close(stdin_pipe[1]); /* finished writing to spawn */
-
-                /* you want to be looping with select() 
-                 * telling you when to read */
-                while((readret = read(stdout_pipe[0], buf, BUF_SIZE-1)) > 0){
-                        
-                        buf[readret] = '\0'; /* nul-terminate string */
-                        fprintf(stdout, "Got from CGI: %s\n", buf);
-                }
-
-                close(stdout_pipe[0]);
-                close(stdin_pipe[1]);
-                
-                if (readret == 0){
-
-                        err_printf("CGI spawned process returned with EOF as \
-expected.\n");
-                        return EXIT_SUCCESS;
-                }
+                cb->is_handle_cgi_pending = 1;
         }
-        /*************** END FORK **************/
 
-    fprintf(stderr, "Process exiting, badly...how did we get here!?\n");
-    return EXIT_FAILURE;        
+
+
+        return 0;        
  out4:
-    free(cgi_cb);    
+        free(cgi_cb);    
  out3:
-    if(stdout_pipe[0] != -1){
-            close(stdout_pipe[0]);
-    }
-    if(stdout_pipe[1] != -1){
-            close(stdout_pipe[1]);
-    }
+        if(stdout_pipe[0] != -1){
+                close(stdout_pipe[0]);
+        }
+        if(stdout_pipe[1] != -1){
+                close(stdout_pipe[1]);
+        }
  out2:
-    if(stdin_pipe[0] != -1){
-            close(stdin_pipe[0]);
-    }
-    if(stdin_pipe[1] != -1){
-            close(stdin_pipe[1]);
-    }
+        if(stdin_pipe[0] != -1){
+                close(stdin_pipe[0]);
+        }
+        if(stdin_pipe[1] != -1){
+                close(stdin_pipe[1]);
+        }
  out1:
         return ret;
 }
@@ -410,97 +380,4 @@ processes.\n");
 }
 /**************** END UTILITY FUNCTIONS ***************/
 
-
-
-
-int cgi(void)
-{
-    /*************** BEGIN VARIABLE DECLARATIONS **************/
-    pid_t pid;
-    int stdin_pipe[2];
-    int stdout_pipe[2];
-    char buf[BUF_SIZE];
-    int readret;
-    /*************** END VARIABLE DECLARATIONS **************/
-
-    /*************** BEGIN PIPE **************/
-    /* 0 can be read from, 1 can be written to */
-    if (pipe(stdin_pipe) < 0)
-    {
-        fprintf(stderr, "Error piping for stdin.\n");
-        return EXIT_FAILURE;
-    }
-
-    if (pipe(stdout_pipe) < 0)
-    {
-        fprintf(stderr, "Error piping for stdout.\n");
-        return EXIT_FAILURE;
-    }
-    /*************** END PIPE **************/
-
-    /*************** BEGIN FORK **************/
-    pid = fork();
-    /* not good */
-    if (pid < 0)
-    {
-        fprintf(stderr, "Something really bad happened when fork()ing.\n");
-        return EXIT_FAILURE;
-    }
-
-    /* child, setup environment, execve */
-    if (pid == 0)
-    {
-        /*************** BEGIN EXECVE ****************/
-        close(stdout_pipe[0]);
-        close(stdin_pipe[1]);
-        dup2(stdout_pipe[1], fileno(stdout));
-        dup2(stdin_pipe[0], fileno(stdin));
-        /* you should probably do something with stderr */
-
-        /* pretty much no matter what, if it returns bad things happened... */
-        if (execve(FILENAME, ARGV, ENVP))
-        {
-            execve_error_handler();
-            fprintf(stderr, "Error executing execve syscall.\n");
-            return EXIT_FAILURE;
-        }
-        /*************** END EXECVE ****************/ 
-    }
-
-    if (pid > 0)
-    {
-        fprintf(stdout, "Parent: Heading to select() loop.\n");
-        close(stdout_pipe[1]);
-        close(stdin_pipe[0]);
-
-        if (write(stdin_pipe[1], POST_BODY, strlen(POST_BODY)) < 0)
-        {
-            fprintf(stderr, "Error writing to spawned CGI program.\n");
-            return EXIT_FAILURE;
-        }
-
-        close(stdin_pipe[1]); /* finished writing to spawn */
-
-        /* you want to be looping with select() telling you when to read */
-        while((readret = read(stdout_pipe[0], buf, BUF_SIZE-1)) > 0)
-        {
-            buf[readret] = '\0'; /* nul-terminate string */
-            fprintf(stdout, "Got from CGI: %s\n", buf);
-        }
-
-        close(stdout_pipe[0]);
-        close(stdin_pipe[1]);
-
-        if (readret == 0)
-        {
-            fprintf(stdout, "CGI spawned process returned with EOF as \
-expected.\n");
-            return EXIT_SUCCESS;
-        }
-    }
-    /*************** END FORK **************/
-
-    fprintf(stderr, "Process exiting, badly...how did we get here!?\n");
-    return EXIT_FAILURE;
-}
 

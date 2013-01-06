@@ -7,6 +7,7 @@
 
 #include <strings.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 
 #include "list.h"
 #include "http.h"
@@ -321,7 +322,7 @@ int parse_cgi_url(req_msg_t *msg)
         char *next_pos = NULL;
         char *end_pos = NULL;
         cgi_arg_t *arg;
-        
+        int ret = 0;
         curr_pos = strstr(cgi_url, CGI_PREFIX);
         if(curr_pos != cgi_url){
                 err_printf("cgi url(%s) not correct", msg->req_line.url);
@@ -338,7 +339,7 @@ int parse_cgi_url(req_msg_t *msg)
                  * parameter?
                  */
                 err_printf("? doesn't exist");
-                ret = ERR_PARSE;
+                ret = ERR_PARSE_MALFORMAT_REQ_MSG;
                 goto out1;
         }
         
@@ -365,14 +366,29 @@ int parse_cgi_url(req_msg_t *msg)
                 }
                 /* add the argument into the list */
                 list_add_tail(&arg->arg_link, 
-                              &msg->req_line.cgi_url.arg_link);
+                              &msg->req_line.cgi_url.arg_list);
                 /* skip '&'(':') */
                 curr_pos = next_pos + 1;                
         }
-
+        /* parse the final argument */
+        arg = (cgi_arg_t *)malloc(sizeof(cgi_arg_t));
+        if((ret = init_cgi_arg(arg)) < 0){
+                goto out3;
+        }
+        if(!arg){
+                ret = ERR_NO_MEM;
+                goto out2;
+        }
+        
+        if(!(arg->arg = 
+             (char *)strncpy_alloc(curr_pos, end_pos - curr_pos))){
+                ret = ERR_NO_MEM;
+                goto out3;
+                }
+        /* add the argument into the list */
+        list_add_tail(&arg->arg_link, 
+                      &msg->req_line.cgi_url.arg_list);        
         return 0;
- out4:
-        clear_cgi_arg(arg);
  out3:
         free(arg);
  out2:
@@ -472,7 +488,7 @@ int init_cgi_url(cgi_url_t *url)
 void clear_cgi_url(cgi_url_t *url)
 {
         cgi_arg_t *arg_curr, *arg_next;
-        list_for_each_entry_safe(arg_curr, arg_next, &url>arg_list, 
+        list_for_each_entry_safe(arg_curr, arg_next, &url->arg_list, 
                                  arg_link){
                 if(arg_curr){
                         free(arg_curr);                        

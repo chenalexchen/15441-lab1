@@ -82,15 +82,16 @@ struct cli_cb{
         int buf_proc_ctr;
         char buf_out[BUF_OUT_SIZE + 1];
         int buf_out_ctr;
-
+        req_msg_t *curr_req_msg;
+        
         int rsrc_fd;                     /* fd for the resource file */
         struct stat statbuf;             /* statbuf for file */
         char *faddr;                     /* starting addr for mmap file */
         int fd_pos;                      /* pos in fd */
 
         cli_cb_t *cgi_parent;            /* the parent of cgi */
-
-
+        int is_handle_cgi_pending;
+        
         /* variables for parser */
         char *par_pos;
         char *par_next;
@@ -99,9 +100,9 @@ struct cli_cb{
         /* req msg list */
         struct list_head req_msg_list;      /* curr req msg to process */
         
-        int handle_req_msg_pending;
-        struct list_head cli_link;          /* link for global hash table */
-    
+        int is_handle_req_msg_pending;
+        struct list_head cli_rlink;          /* link for global hash table */
+        struct list_head cli_wlink;
 };
 
 
@@ -112,7 +113,7 @@ struct cli_cb{
 int parse_cli_cb(cli_cb_t *cb);
 void insert_req_msg(req_msg_t *msg, cli_cb_t *cb);
 int parse_cgi_url(req_msg_t *msg);
-
+void *strncpy_alloc(char *str, int len);
 
 /* for cli_cb handling */
 cli_cb_t *get_cli_cb(int cli_fd, int rw);
@@ -140,6 +141,6 @@ int daemonize(char* lock_file);
 
 
 /* cgi related functions */
-int handle_cgi(req_msg *req_msg, cli_cb_t *cb);
+int handle_cgi(req_msg_t *req_msg, cli_cb_t *cb);
 
 #endif /* end of __SRV_DEF_H_ */

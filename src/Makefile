@@ -17,7 +17,7 @@ CFLAGS = -Wall -Werror -g -I$(INCLUDE)
 LIB = -lssl -lcrypto
 
 # object files needed by server
-OBJ = server.o parser.o daemon.o
+OBJ = server.o parser.o daemon.o cgi.o
 
 
 
