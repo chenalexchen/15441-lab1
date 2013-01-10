@@ -13,7 +13,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
-
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include "srv_def.h"
 #include "http.h"
@@ -65,108 +67,512 @@ char* POST_BODY = "This is the stdin body...\n";
 void execve_error_handler(void);
 
 
-static int create_cgi_arg(char ***argv, req_msg_t *req_msg, int ctr,
-                          char *filename)
+static int create_cgi_arg(char ***argv, req_msg_t *req_msg)
 {
-        cgi_arg_t *arg_curr;
-        int i;
-
-        
-        if(ctr){
-                (*argv) = (char **)malloc(sizeof(char *) * (ctr+2));
-                if(!*argv){
-                        return ERR_NO_MEM;
-                }
-                /* set up the first argv to be the filename*/
-                (*argv)[0] = (char *)strncpy_alloc(filename, strlen(filename));
-                if(!(*argv)[0]){
-                        return ERR_NO_MEM;
-                }
-                
-                i = 1;
-                list_for_each_entry(arg_curr,
-                                    &req_msg->req_line.cgi_url.arg_list,
-                                    arg_link){
-                        (*argv)[i] = 
-                                (char *)strncpy_alloc(arg_curr->arg,
-                                                      strlen(arg_curr->arg));
-                        if(!(*argv)[i]){
-                                return ERR_NO_MEM;
-                        }
-                        err_printf("arg(%s)", (*argv)[i]);
-                        i++;
-                }
-
-                (*argv)[i] = NULL;
-        }else{
-                *argv = NULL;
-        }        
+        *argv = (char **)malloc(sizeof(char *)*2);
+        (*argv)[0] = CGI_EXECUTABLE;
+        (*argv)[1] = NULL;
         return 0;
 }
 
-static int create_cgi_env(char ***envp, req_msg_t *req_msg, int ctr)
+static char *get_field_value(req_msg_t *req_msg, char *field_name)
 {
         msg_hdr_t *msg_hdr;
-        int name_len;
-        int value_len;
+        list_for_each_entry(msg_hdr, &req_msg->msg_hdr_list, 
+                            msg_hdr_link){
 
-        int i;
-        if(ctr){
-                *envp = (char **)malloc(sizeof(char *) * (ctr+1));
-                if(!*envp){
-                        return ERR_NO_MEM;
+                if(!strcmp(msg_hdr->field_name, field_name)){
+                        return msg_hdr->field_value;
                 }
-                i = 0;
-                list_for_each_entry(msg_hdr,
-                                    &req_msg->msg_hdr_list,
-                                    msg_hdr_link){
-                        name_len = strlen(msg_hdr->field_name);
-                        value_len = strlen(msg_hdr->field_value);
-                        /* + 2 because we need '=' and null term */
-                        (*envp)[i] = 
-                                (char *)malloc(strlen(msg_hdr->field_name) +
-                                               strlen(msg_hdr->field_value) +
-                                               2);
-                        
-                        if(!(*envp)[i]){
-                                return ERR_NO_MEM;
-                        }
-                        
-                        memcpy((*envp)[i], msg_hdr->field_name,
-                               name_len);
-                        /* add '=' */
-                        (*envp)[i][name_len] = '=';
-                        
-                        memcpy((*envp)[i] + name_len + 1, msg_hdr->field_value,
-                               value_len);
-                        (*envp)[i][name_len + 1 + value_len] = 0;
-                        err_printf("arg(%s)", (*envp)[i]);
-                        i++;
-                }
-                (*envp)[i] = NULL;
-        }else{
-                *envp = NULL;
-        }        
-        return 0;
+        }
+        return NULL;
 }
 
-/* static void clear_argv(char **argv, int ctr) */
-/* { */
-/*         int i; */
-/*         for(i = 0; i < ctr; i++){ */
-/*                 free(argv[i]); */
-/*         } */
-/*         return; */
-/* } */
+static int create_cgi_env(char ***envp, req_msg_t *req_msg, 
+                          cli_cb_base_t *cgi_parent)
+{
+        int name_len;
+        int value_len;
+        int tmp_len;
+        int uri_len;
+        char *field_value;
 
-/* static void clear_envp(char **envp, int ctr) */
-/* { */
-/*         int i; */
-/*         for(i = 0; i < ctr; i++){ */
-/*                 free(envp[i]); */
-/*         } */
-/*         return; */
-/* } */
+
+        int ret;
+        int i = 0;
+        int ctr = CGI_ENV_CTR;
+
+        *envp = (char **)malloc(sizeof(char *)*(ctr + 1));
+
+        if(!*envp){
+                return ERR_NO_MEM;
+        }
+
+        /* for Content-Length */
+        if((field_value = get_field_value(req_msg, "Content-Length"))){
+                value_len = strlen(field_value);
+                err_printf("value_len = %d",value_len);
+                name_len = strlen("CONTENT_LENGTH");                
+                if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "CONTENT_LENGTH", name_len);
+                (*envp)[i][name_len] = '=';
+                memcpy((*envp)[i] + name_len + 1, field_value, value_len);
+                (*envp)[i][name_len + 1 + value_len] = 0;
+        }else{
+                err_printf("test");
+                name_len = strlen("CONTENT_LENGTH");                
+                if(!((*envp)[i] = (char *)malloc(name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "CONTENT_LENGTH", name_len);
+                (*envp)[i][name_len] = '=';
+                (*envp)[i][name_len + 1] = 0;
+        }
+        err_printf("envp(%d):(%s)", i, (*envp)[i]);
+        i++;
+        
+        /* for Content-Type */
+        if((field_value = get_field_value(req_msg, "Content-Type"))){
+                value_len = strlen(field_value);
+                name_len = strlen("CONTENT_TYPE");                
+                if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "CONTENT_TYPE", name_len);
+                (*envp)[i][name_len] = '=';
+                memcpy((*envp)[i] + name_len + 1, field_value, value_len);
+                (*envp)[i][name_len + 1 + value_len] = 0;
+        }else{
+                name_len = strlen("CONTENT_TYPE");                
+                if(!((*envp)[i] = (char *)malloc(name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "CONTENT_TYPE", name_len);
+                (*envp)[i][name_len] = '=';
+                (*envp)[i][name_len + 1] = 0;
+        }
+        err_printf("envp(%d):(%s)", i, (*envp)[i]);
+        i++;
+
+        /* for GATEWAY_INTERFACE */
+        field_value = "CGI/1.1";
+        value_len = strlen(field_value);
+        name_len = strlen("GATEWAY_INTERFACE");                
+        if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
+                ret = ERR_NO_MEM;
+                return ret;
+        }
+        memcpy((*envp)[i], "GATEWAY_INTERFACE", name_len);
+        (*envp)[i][name_len] = '=';
+        memcpy((*envp)[i] + name_len + 1, field_value, value_len);
+        (*envp)[i][name_len + 1 + value_len] = 0;
+
+        err_printf("envp(%d):(%s)", i, (*envp)[i]);
+        i++;
+
+        /* for PATH_INFO */
+        field_value = req_msg->req_line.cgi_url.path_info;
+        value_len = strlen(field_value);
+        name_len = strlen("PATH_INFO");                
+        if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
+                ret = ERR_NO_MEM;
+                return ret;
+        }
+        memcpy((*envp)[i], "PATH_INFO", name_len);
+        (*envp)[i][name_len] = '=';
+        memcpy((*envp)[i] + name_len + 1, field_value, value_len);
+        (*envp)[i][name_len + 1 + value_len] = 0;
+        err_printf("envp(%d):(%s)", i, (*envp)[i]);
+        i++;
+
+        /* for QUERY_STRING */
+        field_value = req_msg->req_line.cgi_url.query_string;
+        value_len = strlen(field_value);
+        name_len = strlen("QUERY_STRING");                
+        if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
+                ret = ERR_NO_MEM;
+                return ret;
+        }
+        memcpy((*envp)[i], "QUERY_STRING", name_len);
+        (*envp)[i][name_len] = '=';
+        memcpy((*envp)[i] + name_len + 1, field_value, value_len);
+        (*envp)[i][name_len + 1 + value_len] = 0;
+        err_printf("envp(%d):(%s)", i, (*envp)[i]);
+        i++;
+
+        /* for REMOTE_ADDR */
+        field_value = (char *)malloc(CGI_REMOTE_ADDR_LEN + 1);
+        
+        field_value = "127.0.0.1";
+        err_printf("%s", field_value);
+        value_len = strlen(field_value);
+        name_len = strlen("REMOTE_ADDR");                
+        if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
+                ret = ERR_NO_MEM;
+                return ret;
+        }
+        memcpy((*envp)[i], "REMOTE_ADDR", name_len);
+        (*envp)[i][name_len] = '=';
+        memcpy((*envp)[i] + name_len + 1, field_value, value_len);
+        (*envp)[i][name_len + 1 + value_len] = 0;
+        err_printf("envp(%d):(%s)", i, (*envp)[i]);
+        i++;
+
+        /* REQUEST_METHOD */
+        switch(req_msg->req_line.req){
+        case GET:
+                field_value = "GET";
+                break;
+        case POST:
+                field_value = "POST";
+                break;
+        case HEAD:
+                field_value = "HEAD";
+                break;
+        default:
+                field_value = "GET";
+                break;
+        }
+        value_len = strlen(field_value);
+        name_len = strlen("REQUEST_METHOD");                
+        if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
+                ret = ERR_NO_MEM;
+                return ret;
+        }
+        memcpy((*envp)[i], "REQUEST_METHOD", name_len);
+        (*envp)[i][name_len] = '=';
+        memcpy((*envp)[i] + name_len + 1, field_value, value_len);
+        (*envp)[i][name_len + 1 + value_len] = 0;
+        err_printf("envp(%d):(%s)", i, (*envp)[i]);
+        i++;
+
+        /* REQUEST_URI */
+        tmp_len = strlen("/cgi");
+        uri_len = strlen(req_msg->req_line.cgi_url.path_info);
+
+        field_value = (char *)malloc(tmp_len + uri_len + 1);
+        memcpy(field_value, "/cgi", tmp_len);
+        memcpy(field_value + tmp_len, req_msg->req_line.cgi_url.path_info,
+               uri_len);
+        field_value[tmp_len + uri_len] = 0;        
+        value_len = strlen(field_value);
+        name_len = strlen("REQUEST_URI");                
+        if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
+                ret = ERR_NO_MEM;
+                return ret;
+        }
+        memcpy((*envp)[i], "REQUEST_URI", name_len);
+        (*envp)[i][name_len] = '=';
+        memcpy((*envp)[i] + name_len + 1, field_value, value_len);
+        (*envp)[i][name_len + 1 + value_len] = 0;
+        err_printf("envp(%d):(%s)", i, (*envp)[i]);
+        i++;
+
+        /* SCRIPT_NAME */
+        field_value = "/cgi/";
+        value_len = strlen(field_value);
+        name_len = strlen("SCRIPT_NAME");                
+        if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
+                ret = ERR_NO_MEM;
+                return ret;
+        }
+        memcpy((*envp)[i], "SCRIPT_NAME", name_len);
+        (*envp)[i][name_len] = '=';
+        memcpy((*envp)[i] + name_len + 1, field_value, value_len);
+        (*envp)[i][name_len + 1 + value_len] = 0;
+        err_printf("envp(%d):(%s)", i, (*envp)[i]);
+        i++;
+
+        /* SERVER_PORT */
+        if((field_value = (char *)malloc(CGI_REMOTE_ADDR_LEN))){
+                sprintf(field_value, "%d", 9999);                
+        }
+        value_len = strlen(field_value);
+        name_len = strlen("SERVER_PORT");                
+        if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
+                ret = ERR_NO_MEM;
+                return ret;
+        }
+        memcpy((*envp)[i], "SERVER_PORT", name_len);
+        (*envp)[i][name_len] = '=';
+        memcpy((*envp)[i] + name_len + 1, field_value, value_len);
+        (*envp)[i][name_len + 1 + value_len] = 0;
+        err_printf("envp(%d):(%s)", i, (*envp)[i]);
+        i++;
+        
+        /* SERVER_PROTOCOL */
+        field_value = "HTTP/1.1";
+        value_len = strlen(field_value);
+        name_len = strlen("SERVER_PROTOCOL");                
+        if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
+                ret = ERR_NO_MEM;
+                return ret;
+        }
+        memcpy((*envp)[i], "SERVER_PROTOCOL", name_len);
+        (*envp)[i][name_len] = '=';
+        memcpy((*envp)[i] + name_len + 1, field_value, value_len);
+        (*envp)[i][name_len + 1 + value_len] = 0;
+        err_printf("envp(%d):(%s)", i, (*envp)[i]);
+        i++;
+        
+        /* SERVER_SOFTWARE */
+        field_value = "Liso/1.0";
+        value_len = strlen(field_value);
+        name_len = strlen("SERVER_SOFTWARE");                
+        if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
+                ret = ERR_NO_MEM;
+                return ret;
+        }
+        memcpy((*envp)[i], "SERVER_SOFTWARE", name_len);
+        (*envp)[i][name_len] = '=';
+        memcpy((*envp)[i] + name_len + 1, field_value, value_len);
+        (*envp)[i][name_len + 1 + value_len] = 0;
+        err_printf("envp(%d):(%s)", i, (*envp)[i]);
+        i++;
+
+
+        /* for Accept */
+        if((field_value = get_field_value(req_msg, "Accept"))){
+                value_len = strlen(field_value);
+                name_len = strlen("HTTP_ACCEPT");                
+                if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "HTTP_ACCEPT", name_len);
+                (*envp)[i][name_len] = '=';
+                memcpy((*envp)[i] + name_len + 1, field_value, value_len);
+                (*envp)[i][name_len + 1 + value_len] = 0;
+        }else{
+                name_len = strlen("HTTP_ACCEPT");                
+                if(!((*envp)[i] = (char *)malloc(name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "HTTP_ACCEPT", name_len);
+                (*envp)[i][name_len] = '=';
+                (*envp)[i][name_len + 1] = 0;
+        }
+        err_printf("envp(%d):(%s)", i, (*envp)[i]);
+        i++;
+
+
+        /* for Referer */
+        if((field_value = get_field_value(req_msg, "Referer"))){
+                value_len = strlen(field_value);
+                name_len = strlen("HTTP_REFERER");                
+                if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "HTTP_REFERER", name_len);
+                (*envp)[i][name_len] = '=';
+                memcpy((*envp)[i] + name_len + 1, field_value, value_len);
+                (*envp)[i][name_len + 1 + value_len] = 0;
+        }else{
+                name_len = strlen("HTTP_REFERER");                
+                if(!((*envp)[i] = (char *)malloc(name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "HTTP_REFERER", name_len);
+                (*envp)[i][name_len] = '=';
+                (*envp)[i][name_len + 1] = 0;
+        }
+        err_printf("envp(%d):(%s)", i, (*envp)[i]);
+        i++;
+
+
+        /* for Accept-Encoding */
+        if((field_value = get_field_value(req_msg, "Accept-Encoding"))){
+                value_len = strlen(field_value);
+                name_len = strlen("HTTP_ACCEPT_ENCODING");                
+                if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "HTTP_ACCEPT_ENCODING", name_len);
+                (*envp)[i][name_len] = '=';
+                memcpy((*envp)[i] + name_len + 1, field_value, value_len);
+                (*envp)[i][name_len + 1 + value_len] = 0;
+        }else{
+                name_len = strlen("HTTP_ACCEPT_ENCODING");                
+                if(!((*envp)[i] = (char *)malloc(name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "HTTP_ACCEPT_ENCODING", name_len);
+                (*envp)[i][name_len] = '=';
+                (*envp)[i][name_len + 1] = 0;
+        }
+        err_printf("envp(%d):(%s)", i, (*envp)[i]);
+        i++;
+
+
+        /* for Accept-Language */
+        if((field_value = get_field_value(req_msg, "Accept-Language"))){
+                value_len = strlen(field_value);
+                name_len = strlen("HTTP_ACCEPT_LANGUAGE");                
+                if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "HTTP_ACCEPT_LANGUAGE", name_len);
+                (*envp)[i][name_len] = '=';
+                memcpy((*envp)[i] + name_len + 1, field_value, value_len);
+                (*envp)[i][name_len + 1 + value_len] = 0;
+        }else{
+                name_len = strlen("HTTP_ACCEPT_LANGUAGE");                
+                if(!((*envp)[i] = (char *)malloc(name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "HTTP_ACCEPT_LANGUAGE", name_len);
+                (*envp)[i][name_len] = '=';
+                (*envp)[i][name_len + 1] = 0;
+        }
+        err_printf("envp(%d):(%s)", i, (*envp)[i]);
+        i++;
+
+        /* Accept-Charset */
+        if((field_value = get_field_value(req_msg, "Accept-Charset"))){
+                value_len = strlen(field_value);
+                name_len = strlen("HTTP_ACCEPT_CHARSET");                
+                if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "HTTP_ACCEPT_CHARSET", name_len);
+                (*envp)[i][name_len] = '=';
+                memcpy((*envp)[i] + name_len + 1, field_value, value_len);
+                (*envp)[i][name_len + 1 + value_len] = 0;
+        }else{
+                name_len = strlen("HTTP_ACCEPT_CHARSET");                
+                if(!((*envp)[i] = (char *)malloc(name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "HTTP_ACCEPT_CHARSET", name_len);
+                (*envp)[i][name_len] = '=';
+                (*envp)[i][name_len + 1] = 0;
+        }
+        err_printf("envp(%d):(%s)", i, (*envp)[i]);
+        i++;
+
+
+        /* Host */
+        if((field_value = get_field_value(req_msg, "Host"))){
+                value_len = strlen(field_value);
+                name_len = strlen("HTTP_HOST");                
+                if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "HTTP_HOST", name_len);
+                (*envp)[i][name_len] = '=';
+                memcpy((*envp)[i] + name_len + 1, field_value, value_len);
+                (*envp)[i][name_len + 1 + value_len] = 0;
+        }else{
+                name_len = strlen("HTTP_HOST");                
+                if(!((*envp)[i] = (char *)malloc(name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "HTTP_HOST", name_len);
+                (*envp)[i][name_len] = '=';
+                (*envp)[i][name_len + 1] = 0;
+        }
+        err_printf("envp(%d):(%s)", i, (*envp)[i]);
+        i++;
+
+
+        /* Cookie */
+        if((field_value = get_field_value(req_msg, "Cookie"))){
+                value_len = strlen(field_value);
+                name_len = strlen("HTTP_COOKIE");                
+                if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "HTTP_COOKIE", name_len);
+                (*envp)[i][name_len] = '=';
+                memcpy((*envp)[i] + name_len + 1, field_value, value_len);
+                (*envp)[i][name_len + 1 + value_len] = 0;
+        }else{
+                name_len = strlen("HTTP_COOKIE");                
+                if(!((*envp)[i] = (char *)malloc(name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "HTTP_COOKIE", name_len);
+                (*envp)[i][name_len] = '=';
+                (*envp)[i][name_len + 1] = 0;
+        }
+        err_printf("envp(%d):(%s)", i, (*envp)[i]);
+        i++;
+
+
+        /* User-Agent */
+        if((field_value = get_field_value(req_msg, "User-Agent"))){
+                value_len = strlen(field_value);
+                name_len = strlen("HTTP_USER_AGENT");                
+                if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "HTTP_USER_AGENT", name_len);
+                (*envp)[i][name_len] = '=';
+                memcpy((*envp)[i] + name_len + 1, field_value, value_len);
+                (*envp)[i][name_len + 1 + value_len] = 0;
+        }else{
+                name_len = strlen("HTTP_USER_AGENT");                
+                if(!((*envp)[i] = (char *)malloc(name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "HTTP_USER_AGENT", name_len);
+                (*envp)[i][name_len] = '=';
+                (*envp)[i][name_len + 1] = 0;
+        }
+        err_printf("envp(%d):(%s)", i, (*envp)[i]);
+        i++;
+
+
+        /* Connection */
+        if((field_value = get_field_value(req_msg, "Connection"))){
+                value_len = strlen(field_value);
+                name_len = strlen("HTTP_CONNECTION");                
+                if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "HTTP_CONNECTION", name_len);
+                (*envp)[i][name_len] = '=';
+                memcpy((*envp)[i] + name_len + 1, field_value, value_len);
+                (*envp)[i][name_len + 1 + value_len] = 0;
+        }else{
+                name_len = strlen("HTTP_CONNECTION");                
+                if(!((*envp)[i] = (char *)malloc(name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "HTTP_CONNECTION", name_len);
+                (*envp)[i][name_len] = '=';
+                (*envp)[i][name_len + 1] = 0;
+        }
+        err_printf("envp(%d):(%s)", i, (*envp)[i]);
+        i++;
+
+        (*envp)[i] = NULL;
+
+        return 0;
+}
 
 int handle_cgi(req_msg_t *req_msg, cli_cb_base_t *cb)
 {
@@ -177,9 +583,6 @@ int handle_cgi(req_msg_t *req_msg, cli_cb_base_t *cb)
 
         char **argv;
         char **envp;
-        int argv_ctr;
-        int envp_ctr;
-        char cgi_filename[FILENAME_MAX_LEN];
         
         cli_cb_cgi_t *cgi_cb;
 
@@ -228,33 +631,23 @@ int handle_cgi(req_msg_t *req_msg, cli_cb_base_t *cb)
 
                 /* you should probably do something with stderr */
                 
-                /* set up filename */
-                strncpy(cgi_filename, CGI_FD, FILENAME_MAX_LEN);
-                
-                strncat(cgi_filename, req_msg->req_line.url,
-                        FILENAME_MAX_LEN - (sizeof(CGI_FD)-1));
-                
-                err_printf("cgi file executed(%s)", cgi_filename);
-                
-                
+                               
                 /* set up argv and envp */
-                argv_ctr = req_msg->req_line.cgi_url.arg_ctr;
-                err_printf("argv_ctr(%d)", argv_ctr);
-                if((ret = create_cgi_arg(&argv, req_msg, argv_ctr,
-                                         cgi_filename)) < 0){
+                err_printf("create cgi arg");
+                if((ret = create_cgi_arg(&argv, req_msg)) < 0){
                         err_printf("create cgi arg failed, ret = 0x%x", -ret);
                         exit(-1);
                 }
-
-                envp_ctr = req_msg->msg_hdr_ctr;
-                err_printf("envp_ctr(%d)", envp_ctr);
-                if((ret = create_cgi_env(&envp, req_msg, envp_ctr)) < 0){
+                cgi_cb = (cli_cb_cgi_t *)cb;
+                err_printf("create cgi_env");
+                if((ret = create_cgi_env(&envp, req_msg, 
+                                         cgi_cb->cgi_parent)) < 0){
                         err_printf("create cgi env failed, ret = 0x%x", -ret);
                         exit(-1);
                 }
                 /* pretty much no matter what, 
                  * if it returns bad things happened... */
-                if (execve(cgi_filename, argv, envp)){        
+                if (execve(CGI_EXECUTABLE, argv, envp)){        
                         execve_error_handler();
                         err_printf("Error executing execve syscall");
                         return ERR_EXEC;
@@ -281,11 +674,8 @@ int handle_cgi(req_msg_t *req_msg, cli_cb_base_t *cb)
                         ret = ERR_INIT_CLI;
                         goto out4;                        
                 }                
-
                 
         }
-
-
 
         return 0;        
  out4:

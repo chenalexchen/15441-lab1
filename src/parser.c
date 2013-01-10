@@ -320,15 +320,13 @@ int parse_generic(cli_cb_base_t *cb)
 }
 
 
-
-
 int parse_cgi_url(req_msg_t *msg)
 {
         char *cgi_url = msg->req_line.url;
         char *curr_pos = NULL;
         char *next_pos = NULL;
         char *end_pos = NULL;
-        cgi_arg_t *arg;
+
         int ret = 0;
         curr_pos = strstr(cgi_url, CGI_PREFIX);
         if(curr_pos != cgi_url){
@@ -337,6 +335,8 @@ int parse_cgi_url(req_msg_t *msg)
                 goto out1;
         }
         curr_pos += (sizeof(CGI_PREFIX) - 1);
+        /* preserve the first '/' */
+        curr_pos -= 1;
         
         /* end_pos pointed at the null terminator */
         end_pos = cgi_url + strlen(cgi_url);
@@ -350,70 +350,29 @@ int parse_cgi_url(req_msg_t *msg)
                 goto out1;
         }
         
-        if(!(msg->req_line.url = (char *)strncpy_alloc(curr_pos, 
-                                                       next_pos - curr_pos))){
+        if(!(msg->req_line.cgi_url.path_info = 
+             (char *)strncpy_alloc(curr_pos, 
+                                   next_pos - curr_pos))){
                 ret = ERR_NO_MEM;
                 goto out1;
         }
+        dbg_printf("path_info: %s", msg->req_line.cgi_url.path_info);
         /* skip '?' */
         curr_pos = next_pos + 1;
-        msg->req_line.cgi_url.arg_ctr = 0;
-        while((next_pos = strchr(curr_pos, '&')) ||
-              (next_pos = strchr(curr_pos, ':'))){
-                arg = (cgi_arg_t *)malloc(sizeof(cgi_arg_t));
-                if((ret = init_cgi_arg(arg)) < 0){
-                        goto out3;
-                }
-                if(!arg){
-                        ret = ERR_NO_MEM;
-                        goto out2;
-                }
-                
-                if(!(arg->arg = 
-                     (char *)strncpy_alloc(curr_pos, next_pos - curr_pos))){
-                        ret = ERR_NO_MEM;
-                        goto out3;
-                }
-                dbg_printf("arg(%s)", arg->arg);
-                /* add the argument into the list */
-                list_add_tail(&arg->arg_link, 
-                              &msg->req_line.cgi_url.arg_list);
-                msg->req_line.cgi_url.arg_ctr ++;
-                /* skip '&'(':') */
-                curr_pos = next_pos + 1;                
-        }
-        /* parse the final argument */
-        arg = (cgi_arg_t *)malloc(sizeof(cgi_arg_t));
-        if((ret = init_cgi_arg(arg)) < 0){
-                goto out3;
-        }
-        if(!arg){
+        if(!(msg->req_line.cgi_url.query_string = 
+             (char *)strncpy_alloc(curr_pos,
+                                   end_pos - curr_pos))){
                 ret = ERR_NO_MEM;
                 goto out2;
         }
-        
-        if(!(arg->arg = 
-             (char *)strncpy_alloc(curr_pos, end_pos - curr_pos))){
-                ret = ERR_NO_MEM;
-                goto out3;
-                }
-        dbg_printf("arg(%s)", arg->arg);
-        /* add the argument into the list */
-        list_add_tail(&arg->arg_link, 
-                      &msg->req_line.cgi_url.arg_list);        
-        msg->req_line.cgi_url.arg_ctr ++;
+        dbg_printf("query_string: %s", msg->req_line.cgi_url.query_string);
         return 0;
- out3:
-        free(arg);
  out2:
-        clear_cgi_url(&msg->req_line.cgi_url);
-        free(msg->req_line.url);
-        msg->req_line.url = cgi_url;
+        free(msg->req_line.cgi_url.path_info);
+        msg->req_line.cgi_url.path_info = NULL;
  out1:        
         return ret;
 }
-
-
 
 
 void init_req_msg(req_msg_t *msg)
@@ -493,40 +452,17 @@ void clear_req_msg(req_msg_t *msg)
 
 int init_cgi_url(cgi_url_t *url)
 {
-        INIT_LIST_HEAD(&url->arg_list);
-        url->arg_ctr = 0;
+        url->path_info = NULL;
+        url->query_string = NULL;
         return 0;
 }
 
 
 void clear_cgi_url(cgi_url_t *url)
 {
-        cgi_arg_t *arg_curr, *arg_next;
-        list_for_each_entry_safe(arg_curr, arg_next, &url->arg_list, 
-                                 arg_link){
-                if(arg_curr){
-                        free(arg_curr);                        
-                }
-        }
-        url->arg_ctr = 0;
+        if(url->path_info)
+                free(url->path_info);
+        if(url->query_string)
+                free(url->query_string);
         return;
-}
-
-int init_cgi_arg(cgi_arg_t *arg)
-{
-        arg->arg = NULL;
-        return 0;
-}
-
-void clear_cgi_arg(cgi_arg_t *arg)
-{
-        if(arg->arg){
-                free(arg->arg);
-        }
-}
-
-void insert_cgi_arg(cgi_arg_t *arg, cgi_url_t *url)
-{
-        list_add_tail(&arg->arg_link, &url->arg_list);
-        url->arg_ctr ++;
 }

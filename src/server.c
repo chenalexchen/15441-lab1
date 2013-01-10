@@ -17,6 +17,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <unistd.h>
 #include <sys/select.h>
 #include <sys/stat.h>
@@ -253,9 +255,7 @@ static int init_cli_cb_tcp(cli_cb_base_t *cli_cb,
                            int fd)
 {
         cli_cb_tcp_t *cli_cb_tcp = (cli_cb_tcp_t *)cli_cb;
-        if(addr){
-                cli_cb_tcp->cli_addr = *addr;
-        }
+       
         cli_cb_tcp->cli_fd = fd;
         /* init various buffers */
         memset(cli_cb_tcp->buf_in, 0, BUF_IN_SIZE + 1);

@@ -29,16 +29,9 @@ enum req_mthd{
 };
 
 
-struct cgi_arg{
-        char *arg;
-        struct list_head arg_link;
-};
-
-typedef struct cgi_arg cgi_arg_t;
-
 struct cgi_url{
-        struct list_head arg_list;        
-        int arg_ctr;
+        char *path_info;
+        char *query_string;
 };
 
 typedef struct cgi_url cgi_url_t;
@@ -86,8 +79,6 @@ void clear_req_msg(req_msg_t *msg);
 
 int init_cgi_url(cgi_url_t *url);
 void clear_cgi_url(cgi_url_t *url);
-int init_cgi_arg(cgi_arg_t *arg);
-void clear_cgi_arg(cgi_arg_t *arg);
-void insert_cgi_arg(cgi_arg_t *arg, cgi_url_t *url);
+
 
 #endif /* end of __HTTP_H_ */

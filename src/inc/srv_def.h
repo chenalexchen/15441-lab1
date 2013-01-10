@@ -35,8 +35,12 @@
 #define DEFAULT_FD "../static_site/"
 #define FILENAME_MAX_LEN 256
 
-#define CGI_PREFIX "/cgi/"
-#define CGI_FD     "../CGI/"
+#define CGI_PREFIX                "/cgi/"
+#define CGI_FD                    "../CGI/"
+#define CGI_EXECUTABLE            "../CGI/cgi_dumper.py"
+/* number of env */
+#define CGI_ENV_CTR                   21
+#define CGI_REMOTE_ADDR_LEN           32
 
 
 /* struct declaration */
