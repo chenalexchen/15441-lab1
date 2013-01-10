@@ -28,21 +28,23 @@ void *strncpy_alloc(char *str, int len)
 
 
 
-static void shift_req_msg(cli_cb_t *cb)
+static void shift_req_msg(cli_cb_tcp_t *cb)
 {
-    char *buf = cb->buf_proc;
-    cb->buf_proc_ctr -= (cb->par_msg_end - cb->buf_proc);
-     while(*(cb->par_msg_end)){ 
-         *(buf++) = *(cb->par_msg_end++); 
-     } 
-    *(buf) = 0;
 
-    return;
+        char *buf = cb->buf_proc;
+        cb->buf_proc_ctr -= (cb->par_msg_end - cb->buf_proc);
+        while(*(cb->par_msg_end)){ 
+                *(buf++) = *(cb->par_msg_end++); 
+        } 
+        *(buf) = 0;
+        return;
 }
 
-static int parse_req_line(cli_cb_t *cb, req_msg_t *req_msg)
+static int parse_req_line(cli_cb_tcp_t *cb, req_msg_t *req_msg)
 {
     int ret;
+
+
     cb->par_pos = cb->buf_proc;
     /* skip "annoying" char at the beginning of req msg */
     cb->par_pos += strspn(cb->par_pos, " \r\n");
@@ -127,13 +129,15 @@ static int parse_msg_hdr_semantic(msg_hdr_t *msg_hdr, req_msg_t *req_msg)
 {
     if(!strcmp(msg_hdr->field_name, "Content-Length")){
         sscanf(msg_hdr->field_value, "%d", &req_msg->msg_body_len);
+        dbg_printf("msg_hdr_len %d", req_msg->msg_body_len);
     }
     return 0;
 }
 
-int parse_msg_hdr(cli_cb_t *cb, req_msg_t *req_msg)
+int parse_msg_hdr(cli_cb_tcp_t *cb, req_msg_t *req_msg)
 {
     int ret;
+
     msg_hdr_t *msg_hdr = (msg_hdr_t *)malloc(sizeof(msg_hdr_t));
     if(!msg_hdr){
         ret = ERR_NO_MEM;
@@ -193,7 +197,7 @@ int parse_msg_hdr(cli_cb_t *cb, req_msg_t *req_msg)
 }
 
 
-static int is_parse_end(cli_cb_t *cb)
+static int is_parse_end(cli_cb_tcp_t *cb)
 {
     dbg_printf("par_pos 0x%0llx, par_msg_end 0x%0llx", 
                (unsigned long long)cb->par_pos,
@@ -208,15 +212,15 @@ static int is_parse_end(cli_cb_t *cb)
 }
 
 
-void insert_req_msg(req_msg_t *msg, cli_cb_t *cb)
+void insert_req_msg(req_msg_t *msg, cli_cb_tcp_t *cb)
 {
     list_add_tail(&msg->req_msg_link, &cb->req_msg_list);
     return;
 }
 
-static int parse_msg_body(cli_cb_t *cb, req_msg_t *msg)
+static int parse_msg_body(cli_cb_tcp_t *cb, req_msg_t *msg)
 {
-    if(msg->req_line.req == POST && msg->msg_body_len != -1){
+    if(msg->req_line.req == POST && msg->msg_body_len != 0){
         /* parse the msg body */
         cb->par_pos = cb->par_msg_end;
         msg->msg_body = strncpy_alloc(cb->par_pos, msg->msg_body_len);
@@ -229,7 +233,7 @@ static int parse_msg_body(cli_cb_t *cb, req_msg_t *msg)
 }
 
 /* function must be invoked when req_msg is re-initialized */
-int parse_req_msg(cli_cb_t *cb)
+int parse_req_msg(cli_cb_tcp_t *cb)
 {
     int ret;
     req_msg_t *req_msg;
@@ -282,7 +286,7 @@ int parse_req_msg(cli_cb_t *cb)
     return ret;
 }
 
-static int shift_buf_in(cli_cb_t *cb)
+static int shift_buf_in(cli_cb_tcp_t *cb)
 {
 
     /* copy buf_in to buf_proc */
@@ -294,18 +298,21 @@ static int shift_buf_in(cli_cb_t *cb)
     strncat(cb->buf_proc, cb->buf_in, BUF_IN_SIZE);
     cb->buf_proc_ctr += cb->buf_in_ctr;
     /* clear the buf in */
-    *(cb->buf_in) = 0;
+    make_buf_empty(cb->buf_in, &cb->buf_in_ctr);
+    
     return 0;
 }
 
-int parse_cli_cb(cli_cb_t *cb)
+int parse_generic(cli_cb_base_t *cb)
 {
     int ret;
-    if((ret = shift_buf_in(cb)) < 0){
+    cli_cb_tcp_t *tcp_cb = (cli_cb_tcp_t *)cb;
+
+    if((ret = shift_buf_in(tcp_cb)) < 0){
         return ret;
     }
 
-    if((ret = parse_req_msg(cb)) < 0){
+    if((ret = parse_req_msg(tcp_cb)) < 0){
         err_printf("parse_req_msg failed");
         return ret;
     }
@@ -348,8 +355,11 @@ int parse_cgi_url(req_msg_t *msg)
                 ret = ERR_NO_MEM;
                 goto out1;
         }
-        while(!(next_pos = strchr(curr_pos, '&')) &&
-              !(next_pos = strchr(curr_pos, ':'))){
+        /* skip '?' */
+        curr_pos = next_pos + 1;
+        msg->req_line.cgi_url.arg_ctr = 0;
+        while((next_pos = strchr(curr_pos, '&')) ||
+              (next_pos = strchr(curr_pos, ':'))){
                 arg = (cgi_arg_t *)malloc(sizeof(cgi_arg_t));
                 if((ret = init_cgi_arg(arg)) < 0){
                         goto out3;
@@ -364,9 +374,11 @@ int parse_cgi_url(req_msg_t *msg)
                         ret = ERR_NO_MEM;
                         goto out3;
                 }
+                dbg_printf("arg(%s)", arg->arg);
                 /* add the argument into the list */
                 list_add_tail(&arg->arg_link, 
                               &msg->req_line.cgi_url.arg_list);
+                msg->req_line.cgi_url.arg_ctr ++;
                 /* skip '&'(':') */
                 curr_pos = next_pos + 1;                
         }
@@ -385,9 +397,11 @@ int parse_cgi_url(req_msg_t *msg)
                 ret = ERR_NO_MEM;
                 goto out3;
                 }
+        dbg_printf("arg(%s)", arg->arg);
         /* add the argument into the list */
         list_add_tail(&arg->arg_link, 
                       &msg->req_line.cgi_url.arg_list);        
+        msg->req_line.cgi_url.arg_ctr ++;
         return 0;
  out3:
         free(arg);
@@ -410,7 +424,7 @@ void init_req_msg(req_msg_t *msg)
     init_cgi_url(&msg->req_line.cgi_url);
 
     msg->msg_body = NULL;
-    msg->msg_body_len = -1;
+    msg->msg_body_len = 0;
     msg->msg_hdr_ctr = 0;
     INIT_LIST_HEAD(&msg->msg_hdr_list);
 }
@@ -430,7 +444,7 @@ void insert_msg_hdr(msg_hdr_t *hdr, req_msg_t *msg)
     return;
 }
 
-static void free_req_line(req_line_t *req_line)
+static void clear_req_line(req_line_t *req_line)
 {
     if(req_line->url){
         free(req_line->url);
@@ -444,7 +458,7 @@ static void free_req_line(req_line_t *req_line)
     return;
 }
 
-static void free_msg_hdr(msg_hdr_t *msg_hdr)
+static void clear_msg_hdr(msg_hdr_t *msg_hdr)
 {
     if(msg_hdr->field_name){
         free(msg_hdr->field_name);
@@ -455,24 +469,24 @@ static void free_msg_hdr(msg_hdr_t *msg_hdr)
         free(msg_hdr->field_value);
         msg_hdr->field_value = NULL;
     }
-    free(msg_hdr);
+
     return;
 }
 
 
-void free_req_msg(req_msg_t *msg)
+void clear_req_msg(req_msg_t *msg)
 {
-    free_req_line(&msg->req_line);
+    clear_req_line(&msg->req_line);
     msg_hdr_t *hdr, *hdr_next;
     list_for_each_entry_safe(hdr, hdr_next, &msg->msg_hdr_list,
                             msg_hdr_link){
         list_del(&hdr->msg_hdr_link);
-        free_msg_hdr(hdr);
+        clear_msg_hdr(hdr);
+        free(hdr);
     }
     if(msg->msg_body)
         free(msg->msg_body);
-    
-    free(msg);
+
 }
 
 

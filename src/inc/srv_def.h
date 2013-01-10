@@ -36,52 +36,83 @@
 #define FILENAME_MAX_LEN 256
 
 #define CGI_PREFIX "/cgi/"
-#define CGI_FD     "./cgi/"
+#define CGI_FD     "../CGI/"
 
 
-struct cli_cb;
-typedef struct cli_cb cli_cb_t;
+/* struct declaration */
+struct cli_cb_base;
+typedef struct cli_cb_base cli_cb_base_t;
+struct cli_cb_listen_tcp;
+typedef struct cli_cb_listen_tcp cli_cb_listen_tcp_t;
+struct cli_cb_tcp;
+typedef struct cli_cb_tcp cli_cb_tcp_t;
+struct cli_cb_ssl;
+typedef struct cli_cb_ssl cli_cb_ssl_t;
+struct cli_cb_cgi;
+typedef struct cli_cb_cgi cli_cb_cgi_t;
+struct cli_cb_listen_ssl;
+typedef struct cli_cb_listen_ssl cli_cb_listen_ssl_t;
 
 struct cli_cb_mthd{
-        int (*new_connection)(cli_cb_t *cb);
-        int (*close)(cli_cb_t *cb);
-        int (*recv)(cli_cb_t *cb);
-        int (*parse)(cli_cb_t *cb);
-        int (*handle_req_msg)(cli_cb_t *cb);
-        int (*send)(cli_cb_t *cb);
-        int (*is_handle_req_msg_pending)(cli_cb_t *cb);
+        //  int (*new_connection)(cli_cb_base_t *cb);
+        int (*recv)(cli_cb_base_t *cb);
+        int (*parse)(cli_cb_base_t *cb);
+        int (*handle_req_msg)(cli_cb_base_t *cb);
+        int (*send)(cli_cb_base_t *cb);
+        int (*process)(cli_cb_base_t *cb, int read_ready, int write_ready);
+        //        int (*is_handle_req_msg_pending)(cli_cb_base_t *cb);
+        int (*close)(cli_cb_base_t *cb);
+        int (*close_read)(cli_cb_base_t *cb);
+        int (*close_write)(cli_cb_base_t *cb);
+        void (*destroy)(cli_cb_base_t *cb);
+
 };
 
 typedef struct cli_cb_mthd cli_cb_mthd_t;
 
 enum cli_cb_type{
-    LISTEN,
-    CLI,
+    LISTEN_TCP,
+    CONN_TCP,
+    LISTEN_SSL,
+    CONN_SSL,
     CGI,
 };
 
 
 typedef enum cli_cb_type cli_cb_type_t;
 
-struct cli_cb{
-        struct sockaddr_in cli_addr;
-        int cli_fd_read;
-        int cli_fd_write;
-
+struct cli_cb_base{
         cli_cb_type_t type;
-        int is_ssl;
-        
+                
         cli_cb_mthd_t mthd;
-        
-        SSL *ssl;
-        
+        struct list_head cli_rlink;
+        struct list_head cli_wlink;
+};
+
+
+
+struct cli_cb_listen_tcp{
+        cli_cb_base_t base;        
+        int cli_fd;
+};
+
+
+
+struct cli_cb_tcp{
+        cli_cb_base_t base;
+        struct sockaddr_in cli_addr;
+
+        int cli_fd;
+                       
         char buf_in[BUF_IN_SIZE + 1];        /* recv'd str goes here */
         int buf_in_ctr;
         /* buf for processing pipelined reqs */   
         char buf_proc[BUF_PROC_SIZE + 1]; 
         int buf_proc_ctr;
+        /* buf for output */
         char buf_out[BUF_OUT_SIZE + 1];
         int buf_out_ctr;
+
         req_msg_t *curr_req_msg;
         
         int rsrc_fd;                     /* fd for the resource file */
@@ -89,7 +120,7 @@ struct cli_cb{
         char *faddr;                     /* starting addr for mmap file */
         int fd_pos;                      /* pos in fd */
 
-        cli_cb_t *cgi_parent;            /* the parent of cgi */
+        cli_cb_base_t *cgi_parent;            /* the parent of cgi */
         int is_handle_cgi_pending;
         
         /* variables for parser */
@@ -98,29 +129,45 @@ struct cli_cb{
         char *par_msg_end;
         
         /* req msg list */
-        struct list_head req_msg_list;      /* curr req msg to process */
-        
-        int is_handle_req_msg_pending;
-        struct list_head cli_rlink;          /* link for global hash table */
-        struct list_head cli_wlink;
+        struct list_head req_msg_list;      /* curr req msg to process */       
+        int is_send_pending;
+        int is_cgi_pending;
+};
+
+struct cli_cb_ssl{
+        cli_cb_tcp_t tcp_base;        
+        SSL *ssl;        
+};
+
+struct cli_cb_cgi{
+        cli_cb_base_t base;
+        cli_cb_base_t *cgi_parent;
+        int cli_fd_read;
+        int cli_fd_write;
+};
+
+struct cli_cb_listen_ssl{
+        cli_cb_base_t base;        
+        int cli_fd;        
 };
 
 
+int is_buf_empty(char *buf, int ctr);
+void make_buf_empty(char *buf, int *ctr);
 
-
-
-
-int parse_cli_cb(cli_cb_t *cb);
-void insert_req_msg(req_msg_t *msg, cli_cb_t *cb);
+int parse_generic(cli_cb_base_t *cb);
+void insert_req_msg(req_msg_t *msg, cli_cb_tcp_t *cb);
 int parse_cgi_url(req_msg_t *msg);
 void *strncpy_alloc(char *str, int len);
 
+
 /* for cli_cb handling */
-cli_cb_t *get_cli_cb(int cli_fd, int rw);
-int init_cli_cb(cli_cb_t *cli_cb, struct sockaddr_in *addr, int cli_fd_read,
+cli_cb_base_t *get_cli_cb(int cli_fd, int rw);
+int init_cli_cb(cli_cb_base_t *cli_cb, cli_cb_base_t *parent_cb,
+                struct sockaddr_in *addr, int cli_fd_read,
                 int cli_fd_write,
-                cli_cb_type_t type, int is_ssl);
-void free_cli_cb(cli_cb_t *cli_cb);
+                cli_cb_type_t type);
+void free_cli_cb(cli_cb_base_t *cli_cb);
 
 
 /* for srv function */
@@ -139,8 +186,7 @@ void liso_shutdown(void);
 /* daemonize the server */
 int daemonize(char* lock_file);
 
-
 /* cgi related functions */
-int handle_cgi(req_msg_t *req_msg, cli_cb_t *cb);
+int handle_cgi(req_msg_t *req_msg, cli_cb_base_t *cb);
 
 #endif /* end of __SRV_DEF_H_ */

@@ -82,7 +82,7 @@ void init_msg_hdr(msg_hdr_t *hdr);
 
 void insert_msg_hdr(msg_hdr_t *hdr, req_msg_t *msg);
 
-void free_req_msg(req_msg_t *msg);
+void clear_req_msg(req_msg_t *msg);
 
 int init_cgi_url(cgi_url_t *url);
 void clear_cgi_url(cgi_url_t *url);

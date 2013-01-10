@@ -22,7 +22,7 @@
 
 
 /**************** BEGIN CONSTANTS ***************/
-#define FILENAME "./cgi_script.py"
+#define FILENAME "../CGI/cgi_dumper.py"
 #define BUF_SIZE 4096
 
 /* note: null terminated arrays (null pointer) */
@@ -60,19 +60,30 @@ char* POST_BODY = "This is the stdin body...\n";
 /**************** END CONSTANTS ***************/
 
 
+
+
 void execve_error_handler(void);
 
 
-static int create_cgi_arg(char ***argv, req_msg_t *req_msg, int ctr)
+static int create_cgi_arg(char ***argv, req_msg_t *req_msg, int ctr,
+                          char *filename)
 {
         cgi_arg_t *arg_curr;
         int i;
-        if(!ctr){
-                (*argv) = (char **)malloc(sizeof(char *) * ctr);
+
+        
+        if(ctr){
+                (*argv) = (char **)malloc(sizeof(char *) * (ctr+2));
                 if(!*argv){
                         return ERR_NO_MEM;
                 }
-                i = 0;
+                /* set up the first argv to be the filename*/
+                (*argv)[0] = (char *)strncpy_alloc(filename, strlen(filename));
+                if(!(*argv)[0]){
+                        return ERR_NO_MEM;
+                }
+                
+                i = 1;
                 list_for_each_entry(arg_curr,
                                     &req_msg->req_line.cgi_url.arg_list,
                                     arg_link){
@@ -82,8 +93,11 @@ static int create_cgi_arg(char ***argv, req_msg_t *req_msg, int ctr)
                         if(!(*argv)[i]){
                                 return ERR_NO_MEM;
                         }
+                        err_printf("arg(%s)", (*argv)[i]);
                         i++;
                 }
+
+                (*argv)[i] = NULL;
         }else{
                 *argv = NULL;
         }        
@@ -97,8 +111,8 @@ static int create_cgi_env(char ***envp, req_msg_t *req_msg, int ctr)
         int value_len;
 
         int i;
-        if(!ctr){
-                *envp = (char **)malloc(sizeof(char *) * ctr);
+        if(ctr){
+                *envp = (char **)malloc(sizeof(char *) * (ctr+1));
                 if(!*envp){
                         return ERR_NO_MEM;
                 }
@@ -126,9 +140,10 @@ static int create_cgi_env(char ***envp, req_msg_t *req_msg, int ctr)
                         memcpy((*envp)[i] + name_len + 1, msg_hdr->field_value,
                                value_len);
                         (*envp)[i][name_len + 1 + value_len] = 0;
-
+                        err_printf("arg(%s)", (*envp)[i]);
                         i++;
                 }
+                (*envp)[i] = NULL;
         }else{
                 *envp = NULL;
         }        
@@ -153,7 +168,7 @@ static int create_cgi_env(char ***envp, req_msg_t *req_msg, int ctr)
 /*         return; */
 /* } */
 
-int handle_cgi(req_msg_t *req_msg, cli_cb_t *cb)
+int handle_cgi(req_msg_t *req_msg, cli_cb_base_t *cb)
 {
         pid_t pid;
 
@@ -164,10 +179,9 @@ int handle_cgi(req_msg_t *req_msg, cli_cb_t *cb)
         char **envp;
         int argv_ctr;
         int envp_ctr;
-
         char cgi_filename[FILENAME_MAX_LEN];
         
-        cli_cb_t *cgi_cb;
+        cli_cb_cgi_t *cgi_cb;
 
         int ret;
         if((ret = parse_cgi_url(req_msg)) < 0){
@@ -214,28 +228,30 @@ int handle_cgi(req_msg_t *req_msg, cli_cb_t *cb)
 
                 /* you should probably do something with stderr */
                 
-                
-                /* set up argv and envp */
-                argv_ctr = req_msg->req_line.cgi_url.arg_ctr;
-                
-                if((ret = create_cgi_arg(&argv, req_msg, argv_ctr)) < 0){
-                        err_printf("create cgi arg failed, ret = 0x%x", -ret);
-                        exit(-1);
-                }
-
-                envp_ctr = req_msg->msg_hdr_ctr;
-                
-                if((ret = create_cgi_env(&envp, req_msg, envp_ctr)) < 0){
-                        err_printf("create cgi env failed, ret = 0x%x", -ret);
-                        exit(-1);
-                }
-                
                 /* set up filename */
                 strncpy(cgi_filename, CGI_FD, FILENAME_MAX_LEN);
                 
                 strncat(cgi_filename, req_msg->req_line.url,
                         FILENAME_MAX_LEN - (sizeof(CGI_FD)-1));
                 
+                err_printf("cgi file executed(%s)", cgi_filename);
+                
+                
+                /* set up argv and envp */
+                argv_ctr = req_msg->req_line.cgi_url.arg_ctr;
+                err_printf("argv_ctr(%d)", argv_ctr);
+                if((ret = create_cgi_arg(&argv, req_msg, argv_ctr,
+                                         cgi_filename)) < 0){
+                        err_printf("create cgi arg failed, ret = 0x%x", -ret);
+                        exit(-1);
+                }
+
+                envp_ctr = req_msg->msg_hdr_ctr;
+                err_printf("envp_ctr(%d)", envp_ctr);
+                if((ret = create_cgi_env(&envp, req_msg, envp_ctr)) < 0){
+                        err_printf("create cgi env failed, ret = 0x%x", -ret);
+                        exit(-1);
+                }
                 /* pretty much no matter what, 
                  * if it returns bad things happened... */
                 if (execve(cgi_filename, argv, envp)){        
@@ -246,27 +262,27 @@ int handle_cgi(req_msg_t *req_msg, cli_cb_t *cb)
         }
 
         if (pid > 0){
-                fprintf(stdout, "Parent: Heading to select() loop.\n");
+
                 close(stdout_pipe[1]);
                 stdout_pipe[1] = -1;
                 close(stdin_pipe[0]);
                 stdin_pipe[0] = -1;
                 
-                cgi_cb = (cli_cb_t *)malloc(sizeof(cli_cb_t));
+                cgi_cb = (cli_cb_cgi_t *)malloc(sizeof(cli_cb_cgi_t));
                 if(!cgi_cb){
                         ret = ERR_NO_MEM;
                         goto out3;
                 }
-
-                if((ret = init_cli_cb(cgi_cb, NULL, stdout_pipe[0],
-                                      stdin_pipe[1], CGI, 0)) < 0){
-                        ret = ERR_INIT_CLI;
-                        goto out4;
-                }
+                dbg_printf("read fd(%d), write fd(%d)", stdout_pipe[0],
+                           stdin_pipe[1]);
                 
-                /* set the cgi_parent */
-                cgi_cb->cgi_parent = cb;
-                cb->is_handle_cgi_pending = 1;
+                if((ret = init_cli_cb(&cgi_cb->base, cb, NULL, stdout_pipe[0],
+                                      stdin_pipe[1], CGI)) < 0){
+                        ret = ERR_INIT_CLI;
+                        goto out4;                        
+                }                
+
+                
         }
 
 
