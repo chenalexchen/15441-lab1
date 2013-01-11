@@ -18,7 +18,7 @@ LIB = -lssl -lcrypto
 
 # object files needed by server
 OBJ = server.o parser.o daemon.o cgi.o
-
+BUILD_FD = ../build/.
 
 
 

@@ -193,23 +193,44 @@ static int create_cgi_env(char ***envp, req_msg_t *req_msg,
 
         /* for QUERY_STRING */
         field_value = req_msg->req_line.cgi_url.query_string;
-        value_len = strlen(field_value);
-        name_len = strlen("QUERY_STRING");                
-        if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
-                ret = ERR_NO_MEM;
-                return ret;
+        if(!field_value){
+                name_len = strlen("QUERY_STRING");                
+                if(!((*envp)[i] = (char *)malloc(name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "QUERY_STRING", name_len);
+                (*envp)[i][name_len] = '=';
+                (*envp)[i][name_len + 1] = 0;
+        }else{
+                value_len = strlen(field_value);
+                name_len = strlen("QUERY_STRING");                
+                if(!((*envp)[i] = (char *)malloc(value_len + name_len + 2))){
+                        ret = ERR_NO_MEM;
+                        return ret;
+                }
+                memcpy((*envp)[i], "QUERY_STRING", name_len);
+                (*envp)[i][name_len] = '=';
+                memcpy((*envp)[i] + name_len + 1, field_value, value_len);
+                (*envp)[i][name_len + 1 + value_len] = 0;
         }
-        memcpy((*envp)[i], "QUERY_STRING", name_len);
-        (*envp)[i][name_len] = '=';
-        memcpy((*envp)[i] + name_len + 1, field_value, value_len);
-        (*envp)[i][name_len + 1 + value_len] = 0;
         err_printf("envp(%d):(%s)", i, (*envp)[i]);
         i++;
 
+
         /* for REMOTE_ADDR */
-        field_value = (char *)malloc(CGI_REMOTE_ADDR_LEN + 1);
+        cli_cb_tcp_t *tcp_par = (cli_cb_tcp_t *)cgi_parent;
         
-        field_value = "127.0.0.1";
+        err_printf("addr:%s", inet_ntoa(tcp_par->cli_addr.sin_addr));
+
+        field_value = (char *)malloc(CGI_REMOTE_ADDR_LEN + 1);
+        if(!field_value){
+                ret = ERR_NO_MEM;
+                return ret;
+        }
+
+        snprintf(field_value, CGI_REMOTE_ADDR_LEN, "%s", 
+                 inet_ntoa(tcp_par->cli_addr.sin_addr));
         err_printf("%s", field_value);
         value_len = strlen(field_value);
         name_len = strlen("REMOTE_ADDR");                
@@ -638,10 +659,10 @@ int handle_cgi(req_msg_t *req_msg, cli_cb_base_t *cb)
                         err_printf("create cgi arg failed, ret = 0x%x", -ret);
                         exit(-1);
                 }
-                cgi_cb = (cli_cb_cgi_t *)cb;
+
                 err_printf("create cgi_env");
                 if((ret = create_cgi_env(&envp, req_msg, 
-                                         cgi_cb->cgi_parent)) < 0){
+                                         cb)) < 0){
                         err_printf("create cgi env failed, ret = 0x%x", -ret);
                         exit(-1);
                 }
@@ -668,8 +689,11 @@ int handle_cgi(req_msg_t *req_msg, cli_cb_base_t *cb)
                 }
                 dbg_printf("read fd(%d), write fd(%d)", stdout_pipe[0],
                            stdin_pipe[1]);
-                
-                if((ret = init_cli_cb(&cgi_cb->base, cb, NULL, stdout_pipe[0],
+                cli_cb_tcp_t *tcp_cb = (cli_cb_tcp_t *)cb;
+                dbg_printf("addr_par: %s", 
+                           inet_ntoa(tcp_cb->cli_addr.sin_addr));
+                dbg_printf("%s",tcp_cb->curr_req_msg->msg_body);
+                if((ret = init_cli_cb(&(cgi_cb->base), cb, NULL, stdout_pipe[0],
                                       stdin_pipe[1], CGI)) < 0){
                         ret = ERR_INIT_CLI;
                         goto out4;                        

@@ -256,6 +256,10 @@ static int init_cli_cb_tcp(cli_cb_base_t *cli_cb,
 {
         cli_cb_tcp_t *cli_cb_tcp = (cli_cb_tcp_t *)cli_cb;
        
+        cli_cb_tcp->cli_addr = (*addr);
+        
+        dbg_printf("cli_addr:%s", inet_ntoa(cli_cb_tcp->cli_addr.sin_addr));
+        dbg_printf("addr: %s", inet_ntoa(addr->sin_addr));
         cli_cb_tcp->cli_fd = fd;
         /* init various buffers */
         memset(cli_cb_tcp->buf_in, 0, BUF_IN_SIZE + 1);
@@ -338,6 +342,7 @@ static int init_cli_cb_cgi(cli_cb_base_t *cli_cb,
         cli_cb_cgi->cgi_parent = parent_cb;
         tcp_par->is_cgi_pending = 1;
         
+        dbg_printf("%s", tcp_par->curr_req_msg->msg_body);
         /* init cgi methd */
         cli_cb->mthd.recv = cgi_recv_wrapper;
         cli_cb->mthd.send = cgi_send_wrapper;
@@ -685,7 +690,7 @@ int establish_socket(void)
     }
 
 
-    cb = (cli_cb_base_t *) malloc(sizeof(cli_cb_base_t));
+    cb = (cli_cb_base_t *) malloc(sizeof(cli_cb_listen_tcp_t));
     if(cb == NULL){
         return ERR_NO_MEM;
     }
@@ -720,7 +725,7 @@ int establish_socket(void)
         return ERR_LISTEN;
     }
 
-    cb = (cli_cb_base_t *) malloc(sizeof(cli_cb_base_t));
+    cb = (cli_cb_base_t *) malloc(sizeof(cli_cb_listen_ssl_t));
     if(cb == NULL){
         return ERR_NO_MEM;
     }
@@ -931,13 +936,13 @@ int cgi_recv_wrapper(cli_cb_base_t *cb)
                         }
                         /* close parent connection */
                         tcp_par->is_cgi_pending = 0;
-                        if((ret = cgi_cb->cgi_parent->mthd.close(cgi_cb->
-                                                                 cgi_parent)) 
-                           < 0){
-                                err_printf("close cb failed, ret = 0x%x",
-                                           -ret);
-                                return ret;
-                        }
+                        /* if((ret = cgi_cb->cgi_parent->mthd.close(cgi_cb-> */
+                        /*                                          cgi_parent)) */
+                        /*    < 0){ */
+                        /*         err_printf("close cb failed, ret = 0x%x", */
+                        /*                    -ret); */
+                        /*         return ret; */
+                        /* } */
                 }
         }        
         return 0;
@@ -950,6 +955,7 @@ static int tcp_send_wrapper(cli_cb_base_t *cb)
         int sendctr;
         cli_cb_tcp_t *tcp_cb = (cli_cb_tcp_t *)cb;
         if(!is_buf_empty(tcp_cb->buf_out, tcp_cb->buf_out_ctr)){   
+                dbg_printf("%s",tcp_cb->buf_out);
                 if((sendctr = send(tcp_cb->cli_fd, tcp_cb->buf_out, 
                                    tcp_cb->buf_out_ctr, 0))
                    != tcp_cb->buf_out_ctr){
@@ -998,7 +1004,7 @@ static int cgi_send_wrapper(cli_cb_base_t *cb)
 {
         int sendctr;
         cli_cb_cgi_t *cgi_cb = (cli_cb_cgi_t *)cb;
-        cli_cb_tcp_t *par_cb = (cli_cb_tcp_t *)cgi_cb->cgi_parent;
+        cli_cb_tcp_t *par_cb = (cli_cb_tcp_t *)(cgi_cb->cgi_parent);
 
         if(!is_buf_empty(par_cb->curr_req_msg->msg_body, 
                          par_cb->curr_req_msg->msg_body_len)){
@@ -1008,19 +1014,20 @@ static int cgi_send_wrapper(cli_cb_base_t *cb)
                    != par_cb->curr_req_msg->msg_body_len){
                         
                         cb->mthd.close(cb);
-
                         err_printf("Error sending to client.\n");
-                        
                         return ERR_SEND;
                 }else{
                         dbg_printf("buf sent, conn (%d), ctr(%d)", 
                                    cgi_cb->cli_fd_write,
                                    par_cb->curr_req_msg->msg_body_len);
+                        dbg_printf("cgi parent (%d)", par_cb->cli_fd);
+                        dbg_printf("msg_body: %s", 
+                                   par_cb->curr_req_msg->msg_body);
                         make_buf_empty(par_cb->curr_req_msg->msg_body,
                                        &par_cb->curr_req_msg->msg_body_len);
                         free(par_cb->curr_req_msg->msg_body);
                         par_cb->curr_req_msg->msg_body = NULL;
-                        
+                        par_cb->curr_req_msg->msg_body_len = 0;
                         cb->mthd.close_write(cb);
                 }
         }else{
@@ -1425,7 +1432,8 @@ static int handle_req_msg(cli_cb_base_t *cb)
                     err_printf("ret = 0x%x", -ret);
                     return ret;
             }
-            if(!tcp_cb->is_send_pending){
+            if(!tcp_cb->is_send_pending && !tcp_cb->is_cgi_pending){
+                    dbg_printf("req_msg is freed");
                     clear_req_msg(req_msg);
                     free(req_msg);
             }

@@ -127,11 +127,12 @@ static int parse_req_line(cli_cb_tcp_t *cb, req_msg_t *req_msg)
 
 static int parse_msg_hdr_semantic(msg_hdr_t *msg_hdr, req_msg_t *req_msg)
 {
-    if(!strcmp(msg_hdr->field_name, "Content-Length")){
-        sscanf(msg_hdr->field_value, "%d", &req_msg->msg_body_len);
-        dbg_printf("msg_hdr_len %d", req_msg->msg_body_len);
-    }
-    return 0;
+        dbg_printf("field_name(%s)",msg_hdr->field_name);
+        if(!strcmp(msg_hdr->field_name, "Content-Length")){
+                sscanf(msg_hdr->field_value, "%d", &req_msg->msg_body_len);
+                dbg_printf("msg_hdr_len %d", req_msg->msg_body_len);
+        }
+        return 0;
 }
 
 int parse_msg_hdr(cli_cb_tcp_t *cb, req_msg_t *req_msg)
@@ -205,8 +206,7 @@ static int is_parse_end(cli_cb_tcp_t *cb)
     int ret = cb->par_pos + sizeof(REQ_END_STR) - sizeof(LINE_END_STR) 
         >= cb->par_msg_end;
     if(ret){
-        cb->par_pos = cb->par_msg_end;
-        
+        cb->par_pos = cb->par_msg_end;        
     }
     return ret;
 }
@@ -222,12 +222,16 @@ static int parse_msg_body(cli_cb_tcp_t *cb, req_msg_t *msg)
 {
     if(msg->req_line.req == POST && msg->msg_body_len != 0){
         /* parse the msg body */
-        cb->par_pos = cb->par_msg_end;
-        msg->msg_body = strncpy_alloc(cb->par_pos, msg->msg_body_len);
-        if(!msg->msg_body){
-            err_printf("NO MEM");
-            return ERR_NO_MEM;
-        }
+            dbg_printf("msg_body exists");
+            cb->par_pos = cb->par_msg_end;
+            msg->msg_body = strncpy_alloc(cb->par_pos, msg->msg_body_len);
+
+            if(!msg->msg_body){
+                    err_printf("NO MEM");
+                    return ERR_NO_MEM;
+            }
+            dbg_printf("msg_body(%s)", msg->msg_body);
+            cb->par_msg_end += msg->msg_body_len;
     }
     return 0;
 }
@@ -345,28 +349,36 @@ int parse_cgi_url(req_msg_t *msg)
                 /* TODO: does this mean that current cgi doesn't have 
                  * parameter?
                  */
-                err_printf("? doesn't exist");
-                ret = ERR_PARSE_MALFORMAT_REQ_MSG;
-                goto out1;
-        }
+                if(!(msg->req_line.cgi_url.path_info = 
+                     (char *)strncpy_alloc(curr_pos, 
+                                           end_pos - curr_pos))){
+                        ret = ERR_NO_MEM;
+                        goto out1;
+                }
+                dbg_printf("path_info: %s", msg->req_line.cgi_url.path_info);
+                msg->req_line.cgi_url.query_string = NULL;
+                return 0;
+        }else{
         
-        if(!(msg->req_line.cgi_url.path_info = 
-             (char *)strncpy_alloc(curr_pos, 
-                                   next_pos - curr_pos))){
-                ret = ERR_NO_MEM;
-                goto out1;
+                if(!(msg->req_line.cgi_url.path_info = 
+                     (char *)strncpy_alloc(curr_pos, 
+                                           next_pos - curr_pos))){
+                        ret = ERR_NO_MEM;
+                        goto out1;
+                }
+                dbg_printf("path_info: %s", msg->req_line.cgi_url.path_info);
+                /* skip '?' */
+                curr_pos = next_pos + 1;
+                if(!(msg->req_line.cgi_url.query_string = 
+                     (char *)strncpy_alloc(curr_pos,
+                                           end_pos - curr_pos))){
+                        ret = ERR_NO_MEM;
+                        goto out2;
+                }
+                dbg_printf("query_string: %s", 
+                           msg->req_line.cgi_url.query_string);
+                return 0;
         }
-        dbg_printf("path_info: %s", msg->req_line.cgi_url.path_info);
-        /* skip '?' */
-        curr_pos = next_pos + 1;
-        if(!(msg->req_line.cgi_url.query_string = 
-             (char *)strncpy_alloc(curr_pos,
-                                   end_pos - curr_pos))){
-                ret = ERR_NO_MEM;
-                goto out2;
-        }
-        dbg_printf("query_string: %s", msg->req_line.cgi_url.query_string);
-        return 0;
  out2:
         free(msg->req_line.cgi_url.path_info);
         msg->req_line.cgi_url.path_info = NULL;
